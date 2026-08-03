@@ -1,0 +1,69 @@
+{
+	"name": "@michaelrwalker/buckets",
+	"version": "0.0.0",
+	"description": "Sort items into named buckets using boolean rules over named, async conditions",
+	"type": "module",
+	"main": "main.ts",
+	"types": "main.ts",
+	"exports": {
+		".": "./main.ts"
+	},
+	"files": [
+		"modules",
+		"main.ts",
+		"README.md"
+	],
+	"scripts": {
+		"test": "node --test --experimental-transform-types --disable-warning=ExperimentalWarning \"tests/**/*.test.ts\"",
+		"typecheck": "tsc --noEmit",
+		"format": "biome format --write",
+		"fix": "biome lint --write",
+		"example": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/basic.ts",
+		"example:triage": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/triage.ts",
+		"example:overlapping": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/overlapping.ts",
+		"example:scale": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/scale.ts",
+		"example:narrowing": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/narrowing.ts",
+		"example:router": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/router.ts",
+		"release": "release-it"
+	},
+	"keywords": [
+		"rule-engine",
+		"rules",
+		"classification",
+		"partition",
+		"typescript",
+		"standard-schema"
+	],
+	"license": "MIT",
+	"author": "Michael Walker",
+	"engines": {
+		"node": ">=20"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"release-it": {
+		"$schema": "https://unpkg.com/release-it/schema/release-it.json",
+		"git": {
+			"commit": true,
+			"tag": true,
+			"push": true,
+			"commitMessage": "chore: release v${version}"
+		},
+		"github": {
+			"release": true
+		},
+		"npm": {
+			"publish": true
+		}
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.6",
+		"@types/node": "^26.1.2",
+		"release-it": "^21.0.1",
+		"typescript": "^7.0.2"
+	},
+	"dependencies": {
+		"@standard-schema/spec": "^1.1.0"
+	}
+}
