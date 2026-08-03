@@ -6,6 +6,8 @@ import {
 	LOGIC,
 	type LogicBuilder,
 	type NamesOf,
+	type NarrowOf,
+	onlyNames,
 	type Operand,
 	referencedNames,
 	toExpr,
@@ -18,6 +20,7 @@ import {
 	type BucketReport,
 	type BucketItem,
 	type BucketSpec,
+	type ComputedConditionSpec,
 	type ConditionReport,
 	type ConditionSpec,
 	type GuardOf,
@@ -25,6 +28,7 @@ import {
 	type UnmatchedItem,
 	type ValidateBucket,
 	type ValidateCondition,
+	type ValidateComputedCondition,
 } from "./types.ts";
 
 /* -------------------------------------------------------------------------- */
@@ -40,6 +44,9 @@ interface StoredBucket {
 	readonly name: string;
 	readonly expr: ExprNode<string>;
 }
+
+/** Same shape as a bucket — a computed condition differs only in what it feeds. */
+type StoredComputed = StoredBucket;
 
 type Outcome<TInput> =
 	| {
@@ -98,18 +105,24 @@ function formatIssues(issues: readonly StandardSchemaV1.Issue[]): string {
  * report.buckets.shippable; // Product[]
  * ```
  *
- * Both name parameters are inferred: every condition and bucket you declare
- * widens them, which is what makes `checkFn`'s combinators complete your
- * condition names and reject anything else.
+ * A combination of conditions you name often enough is worth naming once, with
+ * {@link defineComputedCondition} — the name then reads as a condition
+ * everywhere afterwards.
+ *
+ * All three name parameters are inferred: every condition, computed condition
+ * and bucket you declare widens them, which is what makes `checkFn`'s
+ * combinators complete your condition names and reject anything else.
  */
 export class BucketEngine<
 	TInput = never,
 	TGuards extends Record<string, unknown> = Record<never, never>,
 	TBuckets extends Record<string, unknown> = Record<never, never>,
+	TComputed extends Record<string, unknown> = Record<never, never>,
 > {
 	private schema: StandardSchemaV1 | undefined;
 	private inputDefined = false;
 	private readonly conditions: StoredCondition[] = [];
+	private readonly computed: StoredComputed[] = [];
 	private readonly buckets: StoredBucket[] = [];
 
 	/**
@@ -125,23 +138,23 @@ export class BucketEngine<
 	 */
 	defineInput<TSchema>(
 		schema: StandardSchemaV1<unknown, TSchema>,
-	): BucketEngine<TSchema, TGuards, TBuckets>;
+	): BucketEngine<TSchema, TGuards, TBuckets, TComputed>;
 	/**
 	 * Declare the item type without a schema, for when you already trust the
 	 * data and only want the type safety: `.defineInput<Product>()`. Nothing is
 	 * validated at runtime, so `report.errors` can then only ever contain
 	 * condition failures.
 	 */
-	defineInput<TShape>(): BucketEngine<TShape, TGuards, TBuckets>;
+	defineInput<TShape>(): BucketEngine<TShape, TGuards, TBuckets, TComputed>;
 	defineInput<TSchema>(
 		schema?: StandardSchemaV1<unknown, TSchema>,
-	): BucketEngine<TSchema, TGuards, TBuckets> {
+	): BucketEngine<TSchema, TGuards, TBuckets, TComputed> {
 		if (this.inputDefined) {
 			throw new BucketError(
 				"Input is already defined. Call .defineInput() once, before any condition.",
 			);
 		}
-		if (this.conditions.length > 0) {
+		if (this.conditions.length > 0 || this.computed.length > 0) {
 			throw new BucketError(
 				"Define the input before any condition — conditions defined earlier are typed against the wrong item.",
 			);
@@ -160,7 +173,12 @@ export class BucketEngine<
 			this.schema = schema as StandardSchemaV1;
 		}
 		this.inputDefined = true;
-		return this as unknown as BucketEngine<TSchema, TGuards, TBuckets>;
+		return this as unknown as BucketEngine<
+			TSchema,
+			TGuards,
+			TBuckets,
+			TComputed
+		>;
 	}
 
 	/**
@@ -171,21 +189,22 @@ export class BucketEngine<
 	 * `checkFn` may be async, and may throw — a throw sends that item to
 	 * `report.errors` and leaves the rest of the batch alone.
 	 *
-	 * All conditions must be defined before the first bucket, because `ONLY()`
-	 * means "these and nothing else" and so depends on the complete set. Adding
-	 * a condition afterwards would quietly change what an existing `ONLY` rule
-	 * matches.
+	 * All conditions must be defined before the first computed condition and the
+	 * first bucket, because `ONLY()` means "these and nothing else" and so
+	 * depends on the complete set. Adding a condition afterwards would quietly
+	 * change what an existing `ONLY` rule matches.
 	 */
 	defineCondition<
 		const TName extends string,
 		TCheck extends (item: TInput) => boolean | Promise<boolean>,
 	>(
 		condition: ConditionSpec<TName, TCheck> &
-			ValidateCondition<TName, TGuards, TBuckets>,
+			ValidateCondition<TName, TGuards, TComputed, TBuckets>,
 	): BucketEngine<
 		TInput,
 		TGuards & { [K in TName]: GuardOf<TCheck> },
-		TBuckets
+		TBuckets,
+		TComputed
 	> {
 		const { name, checkFn } = condition as ConditionSpec<TName, TCheck>;
 
@@ -200,9 +219,12 @@ export class BucketEngine<
 				`Cannot define condition "${name}" after a bucket has been defined — ONLY() depends on the complete set of conditions. Define all conditions first.`,
 			);
 		}
-		if (this.conditions.some((existing) => existing.name === name)) {
-			throw new BucketError(`A condition named "${name}" is already defined.`);
+		if (this.computed.length > 0) {
+			throw new BucketError(
+				`Cannot define condition "${name}" after a computed condition has been defined — a computed condition is built from the conditions that already exist. Define all conditions first.`,
+			);
 		}
+		this.assertNameIsFree(name);
 
 		this.conditions.push({
 			name,
@@ -214,7 +236,104 @@ export class BucketEngine<
 		return this as unknown as BucketEngine<
 			TInput,
 			TGuards & { [K in TName]: GuardOf<TCheck> },
-			TBuckets
+			TBuckets,
+			TComputed
+		>;
+	}
+
+	/**
+	 * Name a combination of conditions, and have that name be a condition.
+	 *
+	 * `checkFn` receives the same combinators a bucket's does, bound to every
+	 * condition defined so far, and returns the expression the name stands for:
+	 *
+	 * ```ts
+	 * .defineComputedCondition({
+	 *   name: "listedCorrectly",
+	 *   checkFn: ({ AND }) => AND("hasWeight", "hasPrice", "hasCategory"),
+	 * })
+	 * .defineBucket({ name: "readyToShip", checkFn: ({ AND }) => AND("listedCorrectly", "inStock") })
+	 * ```
+	 *
+	 * Afterwards the name works anywhere a condition name does: in a later
+	 * computed condition (so they layer), in a bucket, and as a key of the
+	 * report's `conditions` — which is the point, since seeing *why* an item was
+	 * unmatched is easier in terms you named than in raw predicates.
+	 *
+	 * It costs nothing per item beyond the expression evaluation: the verdicts
+	 * it reads were already collected, so this never re-runs a `checkFn`.
+	 *
+	 * Two rules follow from what these are. They come after every plain
+	 * condition, since a computed condition can only be built out of what
+	 * already exists — which also makes a cycle unstateable. And `ONLY` won't
+	 * accept one: `ONLY` means "and every other condition is false", and a
+	 * computed condition isn't another fact about the item, it's a restatement
+	 * of the facts already counted. `ONLY("hasWeight")` therefore means exactly
+	 * what it meant before you named anything.
+	 */
+	defineComputedCondition<
+		const TName extends string,
+		const TOperand extends Operand<NamesOf<TGuards & TComputed>>,
+	>(
+		condition: ComputedConditionSpec<
+			TName,
+			TGuards & TComputed,
+			NamesOf<TGuards>,
+			TOperand
+		> &
+			ValidateComputedCondition<TName, TGuards, TComputed, TBuckets>,
+	): BucketEngine<
+		TInput,
+		TGuards,
+		TBuckets,
+		TComputed & { [K in TName]: NarrowOf<TOperand, TGuards & TComputed> }
+	> {
+		const { name, checkFn } = condition as ComputedConditionSpec<
+			TName,
+			TGuards & TComputed,
+			NamesOf<TGuards>,
+			TOperand
+		>;
+
+		if (typeof name !== "string" || name.length === 0) {
+			throw new BucketError("A computed condition needs a non-empty name.");
+		}
+		if (typeof checkFn !== "function") {
+			throw new BucketError(
+				`Computed condition "${name}" needs a checkFn returning an expression, like ({ AND }) => AND("a", "b").`,
+			);
+		}
+		if (this.buckets.length > 0) {
+			throw new BucketError(
+				`Cannot define computed condition "${name}" after a bucket has been defined — ONLY() depends on the complete set of conditions. Define all conditions first.`,
+			);
+		}
+		this.assertNameIsFree(name);
+
+		// The combinators are name-agnostic at runtime; the parameter type exists
+		// only to type the names for whoever writes the callback.
+		const produced = checkFn(
+			LOGIC as unknown as LogicBuilder<TGuards & TComputed, NamesOf<TGuards>>,
+		);
+		const expr = toExpr(produced) as ExprNode<string>;
+		this.assertKnownConditions(
+			`Computed condition "${name}"`,
+			expr,
+			// Only what already exists — a computed condition may not name itself,
+			// nor one defined after it, which is what rules out a cycle.
+			new Set([
+				...this.conditions.map((existing) => existing.name),
+				...this.computed.map((existing) => existing.name),
+			]),
+		);
+
+		this.computed.push({ name, expr });
+
+		return this as unknown as BucketEngine<
+			TInput,
+			TGuards,
+			TBuckets,
+			TComputed & { [K in TName]: NarrowOf<TOperand, TGuards & TComputed> }
 		>;
 	}
 
@@ -240,16 +359,24 @@ export class BucketEngine<
 	 */
 	defineBucket<
 		const TName extends string,
-		const TOperand extends Operand<NamesOf<TGuards>>,
+		const TOperand extends Operand<NamesOf<TGuards & TComputed>>,
 	>(
-		bucket: BucketSpec<TName, TGuards, TOperand> &
+		bucket: BucketSpec<TName, TGuards & TComputed, TOperand, NamesOf<TGuards>> &
 			ValidateBucket<TName, TBuckets>,
 	): BucketEngine<
 		TInput,
 		TGuards,
-		TBuckets & { [K in TName]: BucketItem<TOperand, TGuards, TInput> }
+		TBuckets & {
+			[K in TName]: BucketItem<TOperand, TGuards & TComputed, TInput>;
+		},
+		TComputed
 	> {
-		const { name, checkFn } = bucket as BucketSpec<TName, TGuards, TOperand>;
+		const { name, checkFn } = bucket as BucketSpec<
+			TName,
+			TGuards & TComputed,
+			TOperand,
+			NamesOf<TGuards>
+		>;
 
 		if (typeof name !== "string" || name.length === 0) {
 			throw new BucketError("A bucket needs a non-empty name.");
@@ -265,38 +392,76 @@ export class BucketEngine<
 
 		// The combinators are name-agnostic at runtime; the parameter type exists
 		// only to type the names for whoever writes the callback.
-		const produced = checkFn(LOGIC as unknown as LogicBuilder<TGuards>);
+		const produced = checkFn(
+			LOGIC as unknown as LogicBuilder<TGuards & TComputed, NamesOf<TGuards>>,
+		);
 		const expr = toExpr(produced) as ExprNode<string>;
-		this.assertKnownConditions(name, referencedNames(expr));
+		this.assertKnownConditions(`Bucket "${name}"`, expr, this.knownNames());
 
 		this.buckets.push({ name, expr });
 
 		return this as unknown as BucketEngine<
 			TInput,
 			TGuards,
-			TBuckets & { [K in TName]: BucketItem<TOperand, TGuards, TInput> }
+			TBuckets & {
+				[K in TName]: BucketItem<TOperand, TGuards & TComputed, TInput>;
+			},
+			TComputed
 		>;
 	}
 
-	/** Every name a rule mentions has to be a condition that exists. */
+	/** Every condition name, computed ones included, in definition order. */
+	private knownNames(): Set<string> {
+		return new Set([
+			...this.conditions.map((condition) => condition.name),
+			...this.computed.map((condition) => condition.name),
+		]);
+	}
+
+	/** Conditions and computed conditions share one namespace. */
+	private assertNameIsFree(name: string): void {
+		if (!this.knownNames().has(name)) return;
+		throw new BucketError(`A condition named "${name}" is already defined.`);
+	}
+
+	/**
+	 * Every name a rule mentions has to be a condition that exists, and every
+	 * name it mentions inside an `ONLY` has to be a base one — `ONLY` counts the
+	 * conditions that are false, and a computed condition isn't one of those.
+	 */
 	private assertKnownConditions(
-		name: string,
-		referenced: ReadonlySet<string>,
+		label: string,
+		expr: ExprNode<string>,
+		known: ReadonlySet<string>,
 	): void {
-		const known = new Set(this.conditions.map((condition) => condition.name));
-		for (const conditionName of referenced) {
+		for (const conditionName of referencedNames(expr)) {
 			if (known.has(conditionName)) continue;
 			throw new BucketError(
-				`Bucket "${name}" refers to unknown condition "${conditionName}". Defined: ${[...known].join(", ") || "(none)"}.`,
+				`${label} refers to unknown condition "${conditionName}". Defined: ${[...known].join(", ") || "(none)"}.`,
+			);
+		}
+
+		const base = new Set(this.conditions.map((condition) => condition.name));
+		for (const conditionName of onlyNames(expr)) {
+			if (base.has(conditionName)) continue;
+			throw new BucketError(
+				`${label} passes computed condition "${conditionName}" to ONLY(), which takes plain conditions only — ONLY() means "and every other condition is false", and a computed condition restates conditions already counted. Name the conditions it is built from instead.`,
 			);
 		}
 	}
 
-	/** The condition names, in definition order. */
+	/** The plain condition names, in definition order. */
 	get conditionNames(): NamesOf<TGuards>[] {
 		return this.conditions.map(
 			(condition) => condition.name,
 		) as NamesOf<TGuards>[];
+	}
+
+	/** The computed condition names, in definition order. */
+	get computedConditionNames(): NamesOf<TComputed>[] {
+		return this.computed.map(
+			(condition) => condition.name,
+		) as NamesOf<TComputed>[];
 	}
 
 	/** The bucket names, in definition order. */
@@ -310,6 +475,10 @@ export class BucketEngine<
 	 * would land in `report.unmatched`, so this answers "what have I not written
 	 * a rule for yet?" without waiting for the data to tell you.
 	 *
+	 * Only the plain conditions are enumerated, and reported: those are the free
+	 * variables, and a computed condition is derived from them rather than
+	 * independently true or false.
+	 *
 	 * Enumerating is exponential, so this refuses to run past 16 conditions
 	 * (65,536 combinations) rather than hanging. Nothing else enumerates.
 	 */
@@ -317,9 +486,12 @@ export class BucketEngine<
 		const conditionNames = this.conditions.map((condition) => condition.name);
 
 		return allAssignments(conditionNames, "missingCombinations()")
-			.filter((truths) =>
-				this.buckets.every((bucket) => !evaluate(bucket.expr, truths)),
-			)
+			.filter((baseTruths) => {
+				const truths = this.deriveComputed(baseTruths);
+				return this.buckets.every(
+					(bucket) => !evaluate(bucket.expr, truths, baseTruths),
+				);
+			})
 			.map(
 				(truths) =>
 					// Report them in definition order rather than insertion order.
@@ -327,6 +499,24 @@ export class BucketEngine<
 						truths.has(name),
 					) as NamesOf<TGuards>[],
 			);
+	}
+
+	/**
+	 * Fold the computed conditions into a set of base verdicts, in definition
+	 * order so each one sees the ones before it, and record each verdict in
+	 * `into` when a report is being built.
+	 */
+	private deriveComputed(
+		baseTruths: ReadonlySet<string>,
+		into?: Record<string, boolean>,
+	): Set<string> {
+		const truths = new Set(baseTruths);
+		for (const condition of this.computed) {
+			const value = evaluate(condition.expr, truths, baseTruths);
+			if (into !== undefined) into[condition.name] = value;
+			if (value) truths.add(condition.name);
+		}
+		return truths;
 	}
 
 	/**
@@ -344,7 +534,7 @@ export class BucketEngine<
 	async process(
 		items: readonly TInput[],
 		options: ProcessOptions = {},
-	): Promise<BucketReport<TInput, TGuards, TBuckets>> {
+	): Promise<BucketReport<TInput, TGuards & TComputed, TBuckets>> {
 		this.assertReady(".process()");
 		if (!Array.isArray(items)) {
 			throw new BucketError(
@@ -355,8 +545,8 @@ export class BucketEngine<
 		const concurrency = resolveConcurrency(options.concurrency);
 		const buckets = {} as Record<string, TInput[]>;
 		for (const bucket of this.buckets) buckets[bucket.name] = [];
-		const unmatched: UnmatchedItem<TInput, NamesOf<TGuards>>[] = [];
-		const errors: BucketFailure<TInput, NamesOf<TGuards>>[] = [];
+		const unmatched: UnmatchedItem<TInput, NamesOf<TGuards & TComputed>>[] = [];
+		const errors: BucketFailure<TInput, NamesOf<TGuards & TComputed>>[] = [];
 
 		const outcomes = await mapWithConcurrency(items, concurrency, (item) =>
 			this.evaluateItem(item),
@@ -365,12 +555,15 @@ export class BucketEngine<
 		for (const outcome of outcomes) {
 			if (outcome.kind === "failed") {
 				errors.push(
-					...(outcome.failures as BucketFailure<TInput, NamesOf<TGuards>>[]),
+					...(outcome.failures as BucketFailure<
+						TInput,
+						NamesOf<TGuards & TComputed>
+					>[]),
 				);
 				continue;
 			}
 			const conditions = outcome.conditions as ConditionReport<
-				NamesOf<TGuards>
+				NamesOf<TGuards & TComputed>
 			>;
 			if (outcome.buckets.length === 0) {
 				unmatched.push({ item: outcome.item, conditions });
@@ -387,7 +580,7 @@ export class BucketEngine<
 			// same validated object into each bucket its rule matched.
 			buckets: buckets as unknown as BucketReport<
 				TInput,
-				TGuards,
+				TGuards & TComputed,
 				TBuckets
 			>["buckets"],
 			unmatched,
@@ -406,7 +599,7 @@ export class BucketEngine<
 	 */
 	async processOne(
 		item: TInput,
-	): Promise<BucketAssignment<TInput, TGuards, TBuckets>> {
+	): Promise<BucketAssignment<TInput, TGuards & TComputed, TBuckets>> {
 		this.assertReady(".processOne()");
 
 		const outcome = await this.evaluateItem(item);
@@ -422,11 +615,16 @@ export class BucketEngine<
 		return {
 			item: outcome.item,
 			buckets: outcome.buckets as NamesOf<TBuckets>[],
-			conditions: outcome.conditions as ConditionReport<NamesOf<TGuards>>,
+			conditions: outcome.conditions as ConditionReport<
+				NamesOf<TGuards & TComputed>
+			>,
 		};
 	}
 
-	/** Validate one item, run every condition, then every bucket's rule. */
+	/**
+	 * Validate one item, run every condition, derive the computed ones from
+	 * those verdicts, then evaluate every bucket's rule.
+	 */
 	private async evaluateItem(raw: TInput): Promise<Outcome<TInput>> {
 		let item = raw;
 
@@ -468,7 +666,7 @@ export class BucketEngine<
 
 		const conditions: Record<string, boolean> = {};
 		const failures: BucketFailure<TInput, string>[] = [];
-		const truths = new Set<string>();
+		const baseTruths = new Set<string>();
 
 		for (const [index, condition] of this.conditions.entries()) {
 			const result = settled[index];
@@ -483,16 +681,20 @@ export class BucketEngine<
 				continue;
 			}
 			conditions[condition.name] = result.value;
-			if (result.value) truths.add(condition.name);
+			if (result.value) baseTruths.add(condition.name);
 		}
 
+		// A computed condition reads verdicts, so a missing one would make it
+		// answer a question it wasn't asked. Bail before deriving anything.
 		if (failures.length > 0) return { kind: "failed", failures };
+
+		const truths = this.deriveComputed(baseTruths, conditions);
 
 		return {
 			kind: "classified",
 			item,
 			buckets: this.buckets
-				.filter((bucket) => evaluate(bucket.expr, truths))
+				.filter((bucket) => evaluate(bucket.expr, truths, baseTruths))
 				.map((bucket) => bucket.name),
 			conditions,
 		};

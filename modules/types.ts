@@ -98,9 +98,41 @@ export type BucketItem<TOperand, TGuards, TInput> =
  * what it names, unless it uses `ONLY`. Returning a bare condition name is
  * shorthand for that condition being true.
  */
-export interface BucketSpec<TName extends string, TGuards, TOperand> {
+export interface BucketSpec<
+	TName extends string,
+	TGuards,
+	TOperand,
+	TOnlyNames extends string = NamesOf<TGuards>,
+> {
 	readonly name: TName;
-	readonly checkFn: (logic: LogicBuilder<TGuards>) => TOperand;
+	readonly checkFn: (logic: LogicBuilder<TGuards, TOnlyNames>) => TOperand;
+}
+
+/**
+ * A named rule over the conditions that becomes a condition itself. `checkFn`
+ * gets the same combinators a bucket does, bound to every condition defined so
+ * far:
+ *
+ * ```ts
+ * { name: "listedCorrectly", checkFn: ({ AND }) => AND("hasWeight", "hasPrice", "hasCategory") }
+ * ```
+ *
+ * The name then works anywhere a condition name does — in a later computed
+ * condition, in a bucket, and as a key of the report's `conditions`. Nothing
+ * extra runs per item: it's the same expression evaluation a bucket does, over
+ * verdicts already collected.
+ *
+ * `ONLY` inside one still counts against the base conditions only, so
+ * `ONLY("hasWeight")` means the same thing here as it does in a bucket.
+ */
+export interface ComputedConditionSpec<
+	TName extends string,
+	TGuards,
+	TOnlyNames extends string,
+	TOperand,
+> {
+	readonly name: TName;
+	readonly checkFn: (logic: LogicBuilder<TGuards, TOnlyNames>) => TOperand;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -190,14 +222,39 @@ export interface ProcessOptions {
  * retypes the offending property as a sentence, so the compiler reports the
  * rule that was broken instead of a structural mismatch.
  */
-export type ValidateCondition<TName extends string, TGuards, TBuckets> = [
-	NamesOf<TBuckets>,
-] extends [never]
-	? TName extends NamesOf<TGuards>
+export type ValidateCondition<
+	TName extends string,
+	TGuards,
+	TComputed,
+	TBuckets,
+> = [NamesOf<TBuckets>] extends [never]
+	? [NamesOf<TComputed>] extends [never]
+		? TName extends NamesOf<TGuards>
+			? { name: `A condition named "${TName}" is already defined` }
+			: unknown
+		: {
+				name: "Define every condition before the first computed condition — a computed condition is built from the conditions that already exist";
+			}
+	: {
+			name: "Define every condition before the first bucket — ONLY() depends on the full set";
+		};
+
+/**
+ * The `defineComputedCondition` counterpart of {@link ValidateCondition}. A
+ * computed condition shares the condition namespace, so it collides with both
+ * kinds, and still has to come before the first bucket.
+ */
+export type ValidateComputedCondition<
+	TName extends string,
+	TGuards,
+	TComputed,
+	TBuckets,
+> = [NamesOf<TBuckets>] extends [never]
+	? TName extends NamesOf<TGuards> | NamesOf<TComputed>
 		? { name: `A condition named "${TName}" is already defined` }
 		: unknown
 	: {
-			name: "Define every condition before the first bucket — ONLY() depends on the full set";
+			name: "Define every computed condition before the first bucket — ONLY() depends on the full set";
 		};
 
 /** The `defineBucket` counterpart of {@link ValidateCondition}. */

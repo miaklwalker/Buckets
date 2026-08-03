@@ -82,21 +82,21 @@ const engine = new BucketEngine()
 		checkFn: ({ ONLY }) => ONLY("hasWeight", "hasPhotos", "hasPrice"),
 	});
 
-const engineMemory = `${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(0)} MB`
+const engineMemory = `${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(0)} MB`;
 
 const rows = makeRows(ROW_COUNT);
-const rowMemory = `${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(0)} MB`
+const rowMemory = `${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(0)} MB`;
 const startedAt = performance.now();
 const report = await engine.process(rows, { concurrency: CONCURRENCY });
 const elapsedMs = performance.now() - startedAt;
-const processedMemory = `${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(0)} MB`
+const processedMemory = `${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(0)} MB`;
 const placements = Object.values(report.buckets).flat().length;
 console.table({
 	startMemory,
 	engineMemory,
 	rowMemory,
 	processedMemory,
-})
+});
 console.log(
 	`${ROW_COUNT.toLocaleString()} rows, ${engine.conditionNames.length} conditions, ${engine.bucketNames.length} rules`,
 );

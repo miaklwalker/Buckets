@@ -59,6 +59,38 @@ Four is all you need when the operands are booleans. Anything else — "at least
 two of these", "exactly one of those" — is an `OR` of `AND`s, and usually reads
 better written out.
 
+## Naming a combination
+
+Some combinations aren't a rule, they're a phrase you keep using. "Listed
+correctly" isn't a fact you check against a product; it's three facts you
+already check, taken together. `defineComputedCondition` names the combination
+once, and the name is a condition everywhere after that:
+
+```ts
+.defineComputedCondition({
+  name: "listedCorrectly",
+  checkFn: ({ AND }) => AND("hasWeight", "hasPrice", "hasCategory"),
+})
+.defineComputedCondition({
+  name: "sellable",
+  checkFn: ({ AND }) => AND("listedCorrectly", "inStock"),   // they layer
+})
+.defineBucket({ name: "storefront", checkFn: () => "sellable" })
+.defineBucket({
+  name: "backorder",
+  checkFn: ({ AND, NOT }) => AND("listedCorrectly", NOT("inStock")),
+})
+```
+
+`checkFn` gets the same combinators a bucket does, so a computed condition is a
+first-class operand — `NOT("listedCorrectly")` is a rule, not a special case.
+The name also shows up in `report.conditions`, which is the other half of why
+it's worth naming: reading *why* an item went unmatched is easier in the terms
+you chose than in raw predicates.
+
+It costs nothing per item. A computed condition reads verdicts that have
+already been collected, so nothing re-runs — see `examples/computed.ts`.
+
 ## Buckets know their own item type
 
 Declare a condition with a **type predicate** and the engine records what that
@@ -148,9 +180,32 @@ Describes the items being sorted. Call it first, before any condition.
 
 Every condition is evaluated once per item, in parallel, before any rule runs —
 so a condition used by five buckets still costs one call. Define all of them
-before the first bucket: `ONLY` means "these and nothing else", so a condition
-added later would quietly change what an existing `ONLY` rule matches. The
-engine rejects it rather than let that happen.
+before the first computed condition and the first bucket: `ONLY` means "these
+and nothing else", so a condition added later would quietly change what an
+existing `ONLY` rule matches. The engine rejects it rather than let that happen.
+
+## `defineComputedCondition`
+
+| Option | Type | Notes |
+| --- | --- | --- |
+| `name` | `string` | Joins the condition namespace — usable anywhere a condition name is, and unique across both kinds. |
+| `checkFn` | `(logic) => expression` | Receives `{ AND, OR, NOT, ONLY }` bound to every condition defined so far. Return an expression, or a bare condition name. |
+
+Goes after every plain condition and before the first bucket. The first half is
+what a computed condition *is* — built out of what already exists, which is also
+why a cycle can't be stated. The second half is `ONLY` again.
+
+`ONLY` takes plain conditions only, and counts only those. It means "and every
+other condition is false", and a computed condition isn't another fact about the
+item — it's a restatement of facts already counted. Were it counted too,
+`ONLY("hasWeight")` would demand that `listedCorrectly` be false, and a computed
+`nothingFilledIn` would make `ONLY()` unsatisfiable. So `ONLY("hasWeight")`
+means exactly what it meant before you named anything, and passing a computed
+name to it is a compile error.
+
+Narrowing carries through the same way it does into a bucket:
+`AND("isString", "isLong")` named `isLongString` proves `string`, and a bucket
+built on that name hands back `string[]`.
 
 ## `defineBucket`
 
@@ -218,9 +273,10 @@ caller handling one record wants the failure at the call site.
 
 | Member | Returns |
 | --- | --- |
-| `conditionNames` | Condition names, in definition order. |
+| `conditionNames` | Plain condition names, in definition order. |
+| `computedConditionNames` | Computed condition names, in definition order. |
 | `bucketNames` | Bucket names, in definition order. |
-| `missingCombinations()` | Every combination of conditions that satisfies no rule, each as the conditions that would be true. These are exactly the items that would land in `unmatched`, so it answers "what have I not written a rule for?" before the data tells you. Refuses to enumerate past 16 conditions — the only thing here that ever enumerates. |
+| `missingCombinations()` | Every combination of conditions that satisfies no rule, each as the conditions that would be true. These are exactly the items that would land in `unmatched`, so it answers "what have I not written a rule for?" before the data tells you. Enumerates and reports the plain conditions only — those are the free variables — while still deriving the computed ones to decide what each combination matches. Refuses to enumerate past 16 conditions — the only thing here that ever enumerates. |
 
 ## Errors
 
@@ -228,9 +284,13 @@ Everything thrown is a `BucketError`. Configuration mistakes throw immediately
 from the `define*` call that made them, so a misconfigured engine can't reach
 `process`:
 
-- a duplicate condition or bucket name
-- a condition defined after the first bucket
-- a rule referencing a condition that doesn't exist
+- a duplicate condition or bucket name — conditions and computed conditions
+  share one namespace
+- a condition defined after the first computed condition or the first bucket, or
+  a computed condition defined after the first bucket
+- a rule referencing a condition that doesn't exist, or a computed condition
+  referencing one not yet defined
+- `ONLY` handed a computed condition
 - a `checkFn` returning something that is neither a condition name nor an
   expression, or `AND()`/`OR()` with no operands
 - `defineInput` called twice, after a condition, or with a non–Standard Schema
@@ -253,4 +313,5 @@ npm run typecheck
 npm run format
 npm run fix
 npm run example
+npm run example:computed
 ```

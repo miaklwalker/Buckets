@@ -23,6 +23,7 @@
 		"example:overlapping": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/overlapping.ts",
 		"example:scale": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/scale.ts",
 		"example:narrowing": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/narrowing.ts",
+		"example:computed": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/computed.ts",
 		"example:router": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/router.ts",
 		"release": "release-it"
 	},

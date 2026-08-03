@@ -89,11 +89,20 @@ export type IntersectAll<
  * bucket. `NOT` is the one that can't narrow: knowing an item *isn't* a string
  * says nothing about what it is.
  *
+ * `TOnlyNames` is the subset of names `ONLY` will accept — the *base*
+ * conditions, since a computed condition is a restatement of those rather than
+ * an independent fact, and "and nothing else is true" only means anything over
+ * the facts. It defaults to every name, which is what a free-standing
+ * expression gets.
+ *
  * The same functions are exported from the package for expressions you want to
  * hoist and share. Those don't narrow — a free-standing expression has no guard
  * map to resolve names against — but they still check the names.
  */
-export interface LogicBuilder<TGuards> {
+export interface LogicBuilder<
+	TGuards,
+	TOnlyNames extends string = NamesOf<TGuards>,
+> {
 	readonly AND: <const TOperands extends readonly Operand<NamesOf<TGuards>>[]>(
 		...operands: TOperands
 	) => Expr<NamesOf<TGuards>, IntersectAll<TOperands, TGuards>>;
@@ -103,7 +112,7 @@ export interface LogicBuilder<TGuards> {
 	readonly NOT: (
 		operand: Operand<NamesOf<TGuards>>,
 	) => Expr<NamesOf<TGuards>, unknown>;
-	readonly ONLY: <const TNames extends readonly NamesOf<TGuards>[]>(
+	readonly ONLY: <const TNames extends readonly TOnlyNames[]>(
 		...names: TNames
 	) => Expr<NamesOf<TGuards>, IntersectAll<TNames, TGuards>>;
 }
@@ -189,24 +198,36 @@ export const LOGIC = { AND, OR, NOT, ONLY } as unknown as LogicBuilder<
 	Record<string, unknown>
 >;
 
-/** Evaluates an expression against one set of true conditions. */
+/**
+ * Evaluates an expression against one set of true conditions.
+ *
+ * `baseTruths` is the subset of `truths` that `ONLY` counts against, and
+ * defaults to all of them. An engine with computed conditions passes the base
+ * ones: a computed condition is derived from those, so counting it as another
+ * thing that is "also true" would make `ONLY` contradict itself.
+ */
 export function evaluate(
 	expr: ExprNode<string>,
 	truths: ReadonlySet<string>,
+	baseTruths: ReadonlySet<string> = truths,
 ): boolean {
 	switch (expr.kind) {
 		case "condition":
 			return truths.has(expr.name);
 		case "not":
-			return !evaluate(expr.operand, truths);
+			return !evaluate(expr.operand, truths, baseTruths);
 		case "and":
-			return expr.operands.every((operand) => evaluate(operand, truths));
+			return expr.operands.every((operand) =>
+				evaluate(operand, truths, baseTruths),
+			);
 		case "or":
-			return expr.operands.some((operand) => evaluate(operand, truths));
+			return expr.operands.some((operand) =>
+				evaluate(operand, truths, baseTruths),
+			);
 		case "only":
 			return (
-				truths.size === new Set(expr.names).size &&
-				expr.names.every((name) => truths.has(name))
+				baseTruths.size === new Set(expr.names).size &&
+				expr.names.every((name) => baseTruths.has(name))
 			);
 	}
 }
@@ -229,6 +250,32 @@ export function referencedNames(
 		case "and":
 		case "or":
 			for (const operand of expr.operands) referencedNames(operand, into);
+			break;
+	}
+	return into;
+}
+
+/**
+ * Every name an expression uses *inside an `ONLY`*, at any depth. Those are the
+ * ones that have to be base conditions rather than computed ones, which is
+ * checked when the rule is defined rather than per item.
+ */
+export function onlyNames(
+	expr: ExprNode<string>,
+	into: Set<string> = new Set(),
+): Set<string> {
+	switch (expr.kind) {
+		case "only":
+			for (const name of expr.names) into.add(name);
+			break;
+		case "not":
+			onlyNames(expr.operand, into);
+			break;
+		case "and":
+		case "or":
+			for (const operand of expr.operands) onlyNames(operand, into);
+			break;
+		case "condition":
 			break;
 	}
 	return into;
