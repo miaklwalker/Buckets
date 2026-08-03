@@ -1,6 +1,6 @@
 {
 	"name": "@michaelrwalker/buckets",
-	"version": "0.0.0",
+	"version": "0.0.1",
 	"description": "Sort items into named buckets using boolean rules over named, async conditions",
 	"type": "module",
 	"main": "main.ts",
