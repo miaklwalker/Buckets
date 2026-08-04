@@ -229,6 +229,39 @@ const missingSomething = OR(NOT("hasPhotos"), NOT("hasPrice"));
 The callback form is worth preferring where you can, because it's the one that
 types the condition names for you.
 
+## `clone()`
+
+An independent engine holding everything defined so far, at the same type.
+
+The `define*` methods mutate and return the same object — that's what makes the
+chain read the way it does, and it means branching off a shared variable does
+not do what it looks like:
+
+```ts
+const one = base.defineBucket({ name: "a", checkFn: () => "hasWeight" });
+const two = base.defineBucket({ name: "b", checkFn: () => "isDigital" });
+// one === two === base. Both engines now hold *both* buckets, while the types
+// still claim one each — so `one.process()` evaluates a rule its report has no
+// key for.
+```
+
+`clone()` is how you say what that was trying to say:
+
+```ts
+const one = base.clone().defineBucket({ name: "a", checkFn: () => "hasWeight" });
+const two = base.clone().defineBucket({ name: "b", checkFn: () => "isDigital" });
+```
+
+Which is the useful shape for trying two rule sets over one set of conditions —
+a proposed rule change, run against the same batch as the current rules and
+diffed. See `examples/clone.ts`.
+
+The copy is shallow, which is all it needs to be: a stored condition is a name
+and a function, a stored rule is a name and an expression tree, and nothing
+mutates either after it's registered. The ordering rules come with it — a clone
+taken after the first bucket still refuses a new condition, since its `ONLY`
+rules were written against the set it already has.
+
 ## `process(items, options?)`
 
 Sorts a batch:
@@ -314,4 +347,5 @@ npm run format
 npm run fix
 npm run example
 npm run example:computed
+npm run example:clone
 ```

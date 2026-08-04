@@ -361,6 +361,123 @@ describe("input", () => {
 	});
 });
 
+describe("clone", () => {
+	test("two branches off one base stay independent", async () => {
+		const base = products();
+
+		const weighted = base
+			.clone()
+			.defineBucket({ name: "weighted", checkFn: () => "hasWeight" });
+		const digital = base
+			.clone()
+			.defineBucket({ name: "digital", checkFn: () => "isDigital" });
+
+		assert.notStrictEqual(weighted, digital);
+		assert.deepStrictEqual(weighted.bucketNames, ["weighted"]);
+		assert.deepStrictEqual(digital.bucketNames, ["digital"]);
+
+		const report = await weighted.process(PRODUCTS);
+		assert.deepStrictEqual(Object.keys(report.buckets), ["weighted"]);
+	});
+
+	test("the base is untouched by what a clone goes on to define", () => {
+		const base = products();
+
+		base.clone().defineBucket({ name: "weighted", checkFn: () => "hasWeight" });
+
+		assert.deepStrictEqual(base.bucketNames, []);
+		// And it is still usable as a base afterwards.
+		assert.deepStrictEqual(
+			base
+				.clone()
+				.defineBucket({ name: "weighted", checkFn: () => "hasWeight" })
+				.bucketNames,
+			["weighted"],
+		);
+	});
+
+	test("it carries the conditions, computed conditions and buckets", () => {
+		const engine = products()
+			.defineComputedCondition({
+				name: "listedCorrectly",
+				checkFn: ({ AND }) => AND("hasWeight", "isDigital"),
+			})
+			.defineBucket({ name: "listed", checkFn: () => "listedCorrectly" });
+
+		const copy = engine.clone();
+
+		assert.deepStrictEqual(copy.conditionNames, engine.conditionNames);
+		assert.deepStrictEqual(
+			copy.computedConditionNames,
+			engine.computedConditionNames,
+		);
+		assert.deepStrictEqual(copy.bucketNames, engine.bucketNames);
+	});
+
+	test("a clone classifies a batch exactly as the original does", async () => {
+		const engine = products()
+			.defineComputedCondition({
+				name: "listedCorrectly",
+				checkFn: ({ AND }) => AND("hasWeight", "isDigital"),
+			})
+			.defineBucket({ name: "listed", checkFn: () => "listedCorrectly" })
+			.defineBucket({
+				name: "weightOnly",
+				checkFn: ({ ONLY }) => ONLY("hasWeight"),
+			});
+
+		const [original, copy] = await Promise.all([
+			engine.process(PRODUCTS),
+			engine.clone().process(PRODUCTS),
+		]);
+
+		assert.deepStrictEqual(copy.buckets, original.buckets);
+		assert.deepStrictEqual(copy.unmatched, original.unmatched);
+	});
+
+	test("the schema comes with it", async () => {
+		const copy = products()
+			.defineBucket({ name: "weighted", checkFn: () => "hasWeight" })
+			.clone();
+
+		const report = await copy.process([null as unknown as Product]);
+
+		assert.strictEqual(report.errors[0]?.stage, "input");
+	});
+
+	test("a clone taken after a bucket still refuses a new condition", () => {
+		const copy = products()
+			.defineBucket({ name: "weighted", checkFn: () => "hasWeight" })
+			.clone();
+
+		assert.throws(() => {
+			// @ts-expect-error ONLY() depends on the complete set of conditions.
+			copy.defineCondition({ name: "isFragile", checkFn: () => true });
+		}, BucketError);
+	});
+
+	test("a clone still knows its input is defined", () => {
+		const copy = products().clone();
+
+		assert.throws(
+			() => copy.defineInput(productSchema),
+			(error: unknown) =>
+				error instanceof BucketError &&
+				error.message.includes("Input is already defined"),
+		);
+	});
+
+	test("cloning a bare engine is legal and gives a bare engine", async () => {
+		const copy = new BucketEngine().clone();
+
+		assert.deepStrictEqual(copy.conditionNames, []);
+		await assert.rejects(() => copy.process([]), {
+			name: "BucketError",
+			message: /No input defined/,
+		});
+	});
+});
+
 describe("introspection", () => {
 	test("exposes condition and bucket names in definition order", () => {
 		const engine = products()

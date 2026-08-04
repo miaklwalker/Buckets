@@ -55,6 +55,28 @@ describe("inference", () => {
 		assert.deepStrictEqual(engine.bucketNames, ["shippable", "download"]);
 	});
 
+	test("clone hands back the same type it was called on", () => {
+		const engine = configured();
+		const copy = engine.clone();
+
+		type _Same = Expect<Equal<typeof copy, typeof engine>>;
+
+		// So a branch keeps completing the same names, and adding to one of them
+		// widens only that one.
+		const branched = copy.defineBucket({
+			name: "everything",
+			checkFn: ({ OR }) => OR("hasWeight", "isDigital"),
+		});
+		type _Branched = Expect<
+			Equal<BucketsOf<typeof branched>, "shippable" | "download" | "everything">
+		>;
+		type _Untouched = Expect<
+			Equal<BucketsOf<typeof engine>, "shippable" | "download">
+		>;
+
+		assert.deepStrictEqual(engine.bucketNames, ["shippable", "download"]);
+	});
+
 	test("the report is keyed by the bucket names and holds the item type", async () => {
 		const report = await configured().process([]);
 

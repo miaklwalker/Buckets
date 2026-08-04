@@ -410,6 +410,49 @@ export class BucketEngine<
 		>;
 	}
 
+	/**
+	 * An independent engine with everything defined so far, at the same type.
+	 *
+	 * The `define*` methods mutate and return the same object, which is what
+	 * makes the chain read the way it does — and what makes branching off a
+	 * shared variable a trap:
+	 *
+	 * ```ts
+	 * const base = engineWithConditions;
+	 * const one = base.defineBucket({ name: "a", checkFn: () => "hasWeight" });
+	 * const two = base.defineBucket({ name: "b", checkFn: () => "isDigital" });
+	 * // one === two === base, and both now hold *both* buckets, while the
+	 * // types still claim one each.
+	 * ```
+	 *
+	 * `clone()` is the way to say what that was trying to say:
+	 *
+	 * ```ts
+	 * const one = base.clone().defineBucket({ name: "a", checkFn: () => "hasWeight" });
+	 * const two = base.clone().defineBucket({ name: "b", checkFn: () => "isDigital" });
+	 * ```
+	 *
+	 * The copy is shallow, which is all it needs to be: a stored condition is a
+	 * name and a function, a stored rule is a name and an expression tree, and
+	 * nothing mutates either after they're registered. Defining anything on
+	 * either engine afterwards leaves the other alone.
+	 *
+	 * The ordering rules come with it — a clone taken after the first bucket
+	 * still refuses a new condition, since its `ONLY` rules were written against
+	 * the set it already has.
+	 */
+	clone(): BucketEngine<TInput, TGuards, TBuckets, TComputed> {
+		const copy = new BucketEngine<TInput, TGuards, TBuckets, TComputed>();
+
+		copy.schema = this.schema;
+		copy.inputDefined = this.inputDefined;
+		copy.conditions.push(...this.conditions);
+		copy.computed.push(...this.computed);
+		copy.buckets.push(...this.buckets);
+
+		return copy;
+	}
+
 	/** Every condition name, computed ones included, in definition order. */
 	private knownNames(): Set<string> {
 		return new Set([
