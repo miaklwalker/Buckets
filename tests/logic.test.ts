@@ -185,3 +185,123 @@ describe("rules over conditions", () => {
 		);
 	});
 });
+
+describe("the named two-input operators", () => {
+	/** The four rows of a two-variable truth table, in README order. */
+	const ROWS = [
+		{ a: true, b: true },
+		{ a: true, b: false },
+		{ a: false, b: true },
+		{ a: false, b: false },
+	];
+
+	/** Every operator the README spells out, against its textbook column. */
+	function pair() {
+		return new BucketEngine()
+			.defineInput<{ a: boolean; b: boolean }>()
+			.defineCondition({ name: "condOne", checkFn: (item) => item.a })
+			.defineCondition({ name: "condTwo", checkFn: (item) => item.b })
+			.defineBucket({
+				name: "and",
+				checkFn: ({ AND }) => AND("condOne", "condTwo"),
+			})
+			.defineBucket({
+				name: "or",
+				checkFn: ({ OR }) => OR("condOne", "condTwo"),
+			})
+			.defineBucket({
+				name: "xor",
+				checkFn: ({ AND, OR, NOT }) =>
+					AND(OR("condOne", "condTwo"), NOT(AND("condOne", "condTwo"))),
+			})
+			.defineBucket({
+				name: "xorLongForm",
+				checkFn: ({ AND, OR, NOT }) =>
+					OR(AND("condOne", NOT("condTwo")), AND(NOT("condOne"), "condTwo")),
+			})
+			.defineBucket({
+				name: "nand",
+				checkFn: ({ AND, NOT }) => NOT(AND("condOne", "condTwo")),
+			})
+			.defineBucket({
+				name: "nor",
+				checkFn: ({ OR, NOT }) => NOT(OR("condOne", "condTwo")),
+			})
+			.defineBucket({
+				name: "xnor",
+				checkFn: ({ AND, OR, NOT }) =>
+					OR(AND("condOne", "condTwo"), AND(NOT("condOne"), NOT("condTwo"))),
+			})
+			.defineBucket({
+				name: "implies",
+				checkFn: ({ OR, NOT }) => OR(NOT("condOne"), "condTwo"),
+			})
+			.defineBucket({ name: "onlyOne", checkFn: ({ ONLY }) => ONLY("condOne") })
+			.defineBucket({ name: "onlyNone", checkFn: ({ ONLY }) => ONLY() });
+	}
+
+	/** One column of the table, top row first. */
+	const COLUMNS = {
+		and: [true, false, false, false],
+		or: [true, true, true, false],
+		xor: [false, true, true, false],
+		xorLongForm: [false, true, true, false],
+		nand: [false, true, true, true],
+		nor: [false, false, false, true],
+		xnor: [true, false, false, true],
+		implies: [true, false, true, true],
+		onlyOne: [false, true, false, false],
+		onlyNone: [false, false, false, true],
+	} as const;
+
+	test("each one matches the column the README documents", async () => {
+		const engine = pair();
+
+		for (const [name, expected] of Object.entries(COLUMNS)) {
+			const actual = await Promise.all(
+				ROWS.map(async (row) =>
+					(await engine.processOne(row)).buckets.includes(
+						name as keyof typeof COLUMNS,
+					),
+				),
+			);
+			assert.deepStrictEqual(actual, expected, `${name} column`);
+		}
+	});
+
+	test("NAND is not NOR — the mixed rows are the difference", async () => {
+		const engine = pair();
+		const mixed = await engine.processOne({ a: true, b: false });
+
+		// NOT(AND(a, b)) is "not both", which the mixed rows satisfy.
+		assert.ok(mixed.buckets.includes("nand"));
+		// NOT(OR(a, b)) is "neither", which they do not.
+		assert.ok(!mixed.buckets.includes("nor"));
+	});
+
+	test("ONLY is the column a third condition changes", async () => {
+		// ONLY(A) coincides with AND(A, NOT(B)) while those are the only two
+		// conditions. Add a third and ONLY narrows while AND stays put — which is
+		// the whole reason conditions come before rules.
+		const engine = new BucketEngine()
+			.defineInput<{ a: boolean; b: boolean; c: boolean }>()
+			.defineCondition({ name: "condOne", checkFn: (item) => item.a })
+			.defineCondition({ name: "condTwo", checkFn: (item) => item.b })
+			.defineCondition({ name: "condThree", checkFn: (item) => item.c })
+			.defineBucket({ name: "onlyOne", checkFn: ({ ONLY }) => ONLY("condOne") })
+			.defineBucket({
+				name: "oneNotTwo",
+				checkFn: ({ AND, NOT }) => AND("condOne", NOT("condTwo")),
+			});
+
+		const withThird = await engine.processOne({ a: true, b: false, c: true });
+		assert.deepStrictEqual(withThird.buckets, ["oneNotTwo"]);
+
+		const withoutThird = await engine.processOne({
+			a: true,
+			b: false,
+			c: false,
+		});
+		assert.deepStrictEqual(withoutThird.buckets, ["onlyOne", "oneNotTwo"]);
+	});
+});

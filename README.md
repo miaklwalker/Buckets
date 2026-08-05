@@ -59,6 +59,51 @@ Four is all you need when the operands are booleans. Anything else — "at least
 two of these", "exactly one of those" — is an `OR` of `AND`s, and usually reads
 better written out.
 
+### Every two-input operator, written out
+
+The usual named operators, and how each one is spelled here. `A` and `B` are two
+conditions; `T` means the rule matches that combination.
+
+| A | B | AND | OR | XOR | NAND | NOR | XNOR | A→B | `ONLY(A)` | `ONLY()` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| T | T | **T** | **T** | F | F | F | **T** | **T** | F | F |
+| T | F | F | **T** | **T** | **T** | F | F | F | **T** | F |
+| F | T | F | **T** | **T** | **T** | F | F | **T** | F | F |
+| F | F | F | F | F | **T** | **T** | **T** | **T** | F | **T** |
+
+```ts
+AND   →  AND("condOne", "condTwo")                       // both
+OR    →  OR("condOne", "condTwo")                        // at least one
+XOR   →  AND(OR("condOne", "condTwo"),                   // one but not both
+             NOT(AND("condOne", "condTwo")))
+NAND  →  NOT(AND("condOne", "condTwo"))                  // not both
+NOR   →  NOT(OR("condOne", "condTwo"))                   // neither
+XNOR  →  OR(AND("condOne", "condTwo"),                   // both or neither
+            AND(NOT("condOne"), NOT("condTwo")))
+A→B   →  OR(NOT("condOne"), "condTwo")                   // if one, then two
+```
+
+`XOR` also reads well the long way round, as "one without the other, either way":
+`OR(AND("condOne", NOT("condTwo")), AND(NOT("condOne"), "condTwo"))`. Both give
+the same column.
+
+Two of these are worth pausing on, because they're where intuition usually
+slips. **`NAND` is not `NOR`.** `NOT(AND(A, B))` says *not both*, so it matches
+the two mixed rows as well as the empty one — the inner `AND` is evaluated to a
+boolean and then flipped, nothing more. *Neither* is `NOT(OR(A, B))`. Written
+flat those are `OR(NOT(A), NOT(B))` and `AND(NOT(A), NOT(B))` respectively,
+which is [De Morgan's laws](https://en.wikipedia.org/wiki/De_Morgan%27s_laws):
+negating a group swaps `AND` and `OR`. The engine never performs that rewrite —
+it just evaluates the tree you gave it — but the identity is what makes the two
+forms agree on every row.
+
+The last two columns are `ONLY`, which has no textbook name because it isn't a
+two-input operator: it also depends on the conditions you *didn't* mention. With
+exactly two conditions defined, `ONLY(A)` coincides with `AND(A, NOT(B))` and
+`ONLY()` with `NOR` — but define a third condition and those columns change
+while every other column stays put. That's the whole difference between `ONLY`
+and the rest, and why conditions must all be defined before the first rule.
+
 ## Naming a combination
 
 Some combinations aren't a rule, they're a phrase you keep using. "Listed
