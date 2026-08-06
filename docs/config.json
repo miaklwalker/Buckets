@@ -1,0 +1,35 @@
+{
+	"sections": [
+		{
+			"label": "Getting Started",
+			"children": [
+				{ "label": "Overview", "to": "overview" },
+				{ "label": "Installation", "to": "installation" },
+				{ "label": "Quick Start", "to": "quick-start" }
+			]
+		},
+		{
+			"label": "Guides",
+			"children": [
+				{ "label": "Defining Conditions", "to": "guides/conditions" },
+				{ "label": "Buckets and Combinators", "to": "guides/buckets" },
+				{ "label": "Boolean Logic", "to": "guides/boolean-logic" },
+				{ "label": "Computed Conditions", "to": "guides/computed-conditions" },
+				{ "label": "Type Narrowing", "to": "guides/narrowing" },
+				{
+					"label": "Async Conditions and Performance",
+					"to": "guides/async-and-performance"
+				},
+				{ "label": "Cloning and Reuse", "to": "guides/cloning" }
+			]
+		},
+		{
+			"label": "Reference",
+			"children": [
+				{ "label": "BucketEngine", "to": "reference/bucket-engine" },
+				{ "label": "Combinators", "to": "reference/combinators" },
+				{ "label": "Reports and Errors", "to": "reference/process-output" }
+			]
+		}
+	]
+}
