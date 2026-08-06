@@ -94,9 +94,9 @@ known.
 
 Define all plain conditions first: before the first computed condition
 (`defineComputedCondition`) and before the first bucket
-(`defineBucket`). Trying to add a condition afterward throws a `BucketError`:
-adding it later would silently change what an existing `ONLY` rule matches,
-so the engine refuses rather than let that happen quietly.
+(`defineBucket`). Trying to add a condition afterward throws a `BucketError`,
+because adding it later would silently change what an existing `ONLY` rule
+matches.
 
 Condition names and computed condition names share one namespace, so a
 `defineCondition` call with a name already used by a condition *or* a
