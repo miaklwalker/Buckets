@@ -26,6 +26,7 @@
 		"example:computed": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/computed.ts",
 		"example:clone": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/clone.ts",
 		"example:router": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/router.ts",
+		"example:actions": "node --experimental-transform-types --disable-warning=ExperimentalWarning examples/actions.ts",
 		"release": "release-it"
 	},
 	"keywords": [

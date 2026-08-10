@@ -383,6 +383,54 @@ Note what is *not* an error: rules that overlap, a rule that can never match
 overlap is the design, and the other two are what `missingCombinations()` and
 an empty bucket are for.
 
+## `ActionEngine`
+
+`ActionEngine` is `BucketEngine`'s sibling for running named effects instead
+of sorting into named groups. Where a bucket separates naming a condition
+from declaring a rule over named conditions, an action carries its predicate
+and its effect together:
+
+```ts
+import { ActionEngine } from "@michaelrwalker/buckets";
+
+const dispatch = new ActionEngine()
+  .defineInput<Order>()
+  .defineAction({
+    name: "notifyWarehouse",
+    checkFn: (order) => order.status === "paid",
+    actionFn: (order) => dispatchToWarehouse(order.id),
+  })
+  .defineAction({
+    name: "flagForReview",
+    checkFn: (order) => order.riskScore > 80,
+    actionFn: (order) => queueForReview(order.id),
+  });
+
+const report = await dispatch.process(orders);
+report.results.notifyWarehouse; // { item, result }[]
+```
+
+Actions are independent, the same way buckets are: an order that's both paid
+and risky triggers both actions. Unlike a bucket, though, an action doesn't
+share a boolean expression with any other action, so one action's `checkFn`
+or `actionFn` throwing never stops another action from running on that same
+item — the failure is recorded in `report.errors` against that one action,
+and every other action still runs. An item lands in `report.unmatched` only
+when every action's `checkFn` ran and none of them matched; an item that
+errored is never also `unmatched`.
+
+`processOne(item)` mirrors `process` for a single item, resolving to
+`{ item, matched, results, checks, errors }` — and, unlike
+`BucketEngine.processOne`, it does **not** throw when a `checkFn` or
+`actionFn` fails, for the same independence reason. It still throws an
+`ActionError` when input validation itself fails, since nothing can run
+without a valid item.
+
+Everything else — `defineInput`, `clone()`, `concurrency`, and the shape of
+the errors it throws — works exactly as it does on `BucketEngine`, just with
+`ActionError` in place of `BucketError`. See the Actions guide and the
+ActionEngine reference in `docs/` for the full details.
+
 ## Development
 
 ```bash
@@ -393,4 +441,5 @@ npm run fix
 npm run example
 npm run example:computed
 npm run example:clone
+npm run example:actions
 ```

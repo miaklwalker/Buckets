@@ -20,7 +20,8 @@
 					"label": "Async Conditions and Performance",
 					"to": "guides/async-and-performance"
 				},
-				{ "label": "Cloning and Reuse", "to": "guides/cloning" }
+				{ "label": "Cloning and Reuse", "to": "guides/cloning" },
+				{ "label": "Actions", "to": "guides/actions" }
 			]
 		},
 		{
@@ -28,7 +29,8 @@
 			"children": [
 				{ "label": "BucketEngine", "to": "reference/bucket-engine" },
 				{ "label": "Combinators", "to": "reference/combinators" },
-				{ "label": "Reports and Errors", "to": "reference/process-output" }
+				{ "label": "Reports and Errors", "to": "reference/process-output" },
+				{ "label": "ActionEngine", "to": "reference/action-engine" }
 			]
 		}
 	]
