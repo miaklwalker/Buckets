@@ -81,14 +81,17 @@ const withConditions = engine
 `AND`, `OR`, `NOT` and `ONLY` in a later bucket autocomplete your condition
 names and reject a typo at compile time.
 
-### Every condition runs once, in parallel
+### Every condition runs once
 
-Every condition is evaluated once per item, in parallel, before any bucket
-runs, so a condition five different buckets depend on still costs exactly
-one call per item. This is also why conditions have to be fully declared
-before the first bucket: a bucket's `ONLY` rule means "these and nothing
-else", and that only makes sense once the complete set of conditions is
-known.
+Every condition is evaluated once per item, before any bucket runs, so a
+condition five different buckets depend on still costs exactly one call per
+item. Conditions with nothing gating them run concurrently; a condition
+declared with `when` (see the Preconditions guide) waits on whatever it
+depends on and can skip its `checkFn` entirely when the precondition doesn't
+hold — but it's still evaluated at most once. This is also why conditions
+have to be fully declared before the first bucket: a bucket's `ONLY` rule
+means "these and nothing else", and that only makes sense once the complete
+set of conditions is known.
 
 ### Ordering rules
 
@@ -140,3 +143,26 @@ than the engine's input type. This is entirely opt-in: an ordinary boolean
 predicate still works exactly as before, it just narrows nothing. See the
 Type Narrowing guide for the full story, including how narrowing composes
 through `AND`, `OR` and `NOT`.
+
+## Gating on other conditions
+
+A condition can depend on another one directly, with `when`: `checkFn` is
+skipped entirely when the precondition doesn't hold, and can see the
+narrower type the precondition proved.
+
+```ts
+.defineCondition({
+  name: "hasProduct",
+  checkFn: (item): item is Listing & { product: Product } =>
+    item.product !== undefined,
+})
+.defineCondition({
+  name: "hasWeight",
+  when: () => "hasProduct",
+  // item.product is Product here, not Product | undefined.
+  checkFn: (item) => item.product.weightKg !== null,
+})
+```
+
+See the Preconditions guide for the different ways to write `when`, and the
+narrowing/autocomplete tradeoff each one makes.

@@ -1,6 +1,6 @@
 ---
 title: "Combinators"
-description: "The AND, OR, NOT and ONLY functions, both as the bound logic passed to checkFn and as standalone exports."
+description: "The AND, OR, NOT and ONLY functions, both as the bound logic passed to checkFn and as standalone exports, plus the Prettify type they use to flatten what they narrow to."
 ---
 
 Every `checkFn` for a bucket or a computed condition receives an object with
@@ -24,11 +24,21 @@ const missingSomething = OR(NOT("hasPhotos"), NOT("hasPrice"));
 ```
 
 The standalone exports check names at runtime the same way the bound
-versions do, but since they aren't tied to a specific engine, they can't type
-the names for you: a typo there is caught when the expression is handed to
-`defineBucket` or `defineComputedCondition`, not while you're typing it. The
-callback form (`checkFn: ({ AND }) => ...`) is worth preferring where you
-can for that reason.
+versions do, but since they aren't tied to a specific engine while you're
+writing the call, they can't type the names for you: a typo there is caught
+when the expression is handed to `defineBucket`, `defineComputedCondition`,
+or a condition's `when`, not while you're typing it. The callback form
+(`checkFn: ({ AND }) => ...`) is worth preferring where you can for that
+reason — it's the one that autocompletes.
+
+`AND`, `OR` and `NOT` (not `ONLY`) still narrow when called this way,
+despite not knowing the engine yet: the standalone call carries what it was
+built from — its operands, not an answer — until it finally reaches a
+`TGuards` to resolve them against, at `defineBucket`,
+`defineComputedCondition`, or a condition's `when`. So `AND("hasWeight",
+"isDigital")`, built once and reused across several buckets, narrows exactly
+as if you'd written `({ AND }) => AND("hasWeight", "isDigital")` at each of
+them.
 
 ## `AND(...operands)`
 
@@ -108,11 +118,45 @@ condition is true":
 Two type exports back the combinators, useful if you're writing a helper
 that builds expressions generically:
 
-- `Operand<TName>`: either a bare condition name (`TName`) or an `Expr`.
-  What every combinator parameter accepts.
-- `Expr<TName, TNarrow>`: the type of an expression built by `AND`, `OR`,
-  `NOT` or `ONLY`. `TNarrow` is what the expression proves about the item,
-  propagated automatically by the combinators; you never write it by hand.
+- `Operand<TName>`: a bare condition name (`TName`), an `Expr` built by the
+  bound combinators handed to a `checkFn`, or the result of a standalone
+  `AND`/`OR`/`NOT` call. What every combinator parameter accepts.
+- `Expr<TName, TNarrow>`: the type of an expression built by the *bound*
+  `AND`, `OR`, `NOT` or `ONLY` — the ones handed to a `checkFn`. `TNarrow` is
+  what the expression proves about the item, already resolved against that
+  engine's `TGuards`; you never write it by hand.
+
+A standalone `AND`/`OR`/`NOT` call carries a different, internal phantom —
+its raw operands rather than an already-resolved `TNarrow`, since it has no
+`TGuards` yet to resolve them against. `NarrowOf<TOperand, TGuards>` reads
+whichever phantom is actually present, which is how both forms end up
+narrowing the same way once they reach somewhere with a `TGuards` to check
+against.
+
+## `Prettify<T>`
+
+Flattens an intersection into one plain object type, for display only:
+`Prettify<A & B>` and `A & B` accept exactly the same values, but a hover or
+error message shows the merged shape instead of the chain of `&`s that
+produced it.
+
+`AND` uses it automatically once it's folding two or more operands together,
+so `AND("hasProduct", "isActive")`'s narrowed type reads as one merged
+object rather than `Listing & Record<"product", Product> & Record<"isActive",
+boolean>`. A single operand is left untouched — nothing was folded, so
+there's nothing to flatten — and a fold that's still callable (a condition
+proving a function type) skips `Prettify` too, since `keyof` a function type
+only sees its own properties (`name`, `length`, …), never its call
+signature.
+
+`Prettify` is also exported directly, for the same reason on your own types:
+
+```ts
+import type { Prettify } from "@michaelrwalker/buckets";
+
+type Combined = Prettify<Listing & { product: Product } & { alternate: Product }>;
+// { id: string; product: Product; alternate: Product } — one object, not two &s
+```
 
 Expressions are plain, inspectable data under the hood: that's what makes
 them safe to build outside a `checkFn`, store in a variable, and pass around.

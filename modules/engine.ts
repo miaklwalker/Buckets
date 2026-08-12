@@ -1,14 +1,16 @@
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import { allAssignments } from "./enumerate.ts";
 import {
-	evaluate,
 	type ExprNode,
+	evaluate,
 	LOGIC,
 	type LogicBuilder,
 	type NamesOf,
 	type NarrowOf,
-	onlyNames,
 	type Operand,
+	onlyNames,
+	PRECONDITION_LOGIC,
+	type PreconditionBuilder,
 	referencedNames,
 	toExpr,
 } from "./logic.ts";
@@ -17,8 +19,8 @@ import {
 	type BucketAssignment,
 	BucketError,
 	type BucketFailure,
-	type BucketReport,
 	type BucketItem,
+	type BucketReport,
 	type BucketSpec,
 	type ComputedConditionSpec,
 	type ConditionReport,
@@ -27,8 +29,8 @@ import {
 	type ProcessOptions,
 	type UnmatchedItem,
 	type ValidateBucket,
-	type ValidateCondition,
 	type ValidateComputedCondition,
+	type ValidateCondition,
 } from "./types.ts";
 
 /* -------------------------------------------------------------------------- */
@@ -38,6 +40,16 @@ import {
 interface StoredCondition {
 	readonly name: string;
 	readonly checkFn: (item: unknown) => boolean | Promise<boolean>;
+	/** Undefined for a condition with no `when` — always runs. */
+	readonly when: ExprNode<string> | undefined;
+	/**
+	 * How many `when` hops separate this condition from one with none — 0 for
+	 * an ungated condition, otherwise one more than the furthest condition its
+	 * `when` names. Conditions sharing a wave have nothing to wait on each
+	 * other for, so a wave is evaluated as one concurrent batch; waves run in
+	 * order because a later one may depend on an earlier one's verdict.
+	 */
+	readonly wave: number;
 }
 
 interface StoredBucket {
@@ -124,6 +136,8 @@ export class BucketEngine<
 	private readonly conditions: StoredCondition[] = [];
 	private readonly computed: StoredComputed[] = [];
 	private readonly buckets: StoredBucket[] = [];
+	/** Conditions grouped by {@link StoredCondition.wave}, rebuilt on demand. */
+	private waveGroupsCache: readonly StoredCondition[][] | undefined;
 
 	/**
 	 * Describe the items being sorted with a [Standard Schema](https://standardschema.dev)
@@ -193,20 +207,139 @@ export class BucketEngine<
 	 * first bucket, because `ONLY()` means "these and nothing else" and so
 	 * depends on the complete set. Adding a condition afterwards would quietly
 	 * change what an existing `ONLY` rule matches.
+	 *
+	 * `when` names a precondition over the conditions defined so far — a bare
+	 * name, or `AND`/`OR`/`NOT` over them:
+	 *
+	 * ```ts
+	 * .defineCondition({
+	 *   name: "hasProduct",
+	 *   checkFn: (item): item is typeof item & { product: Product } =>
+	 *     item.product !== undefined,
+	 * })
+	 * .defineCondition({
+	 *   name: "hasWeight",
+	 *   when: () => "hasProduct",
+	 *   // item.product is Product here, not Product | undefined — no `?.`,
+	 *   // because `hasProduct` already proved it before this ever runs.
+	 *   checkFn: (item) => item.product.weight > 0,
+	 * })
+	 * ```
+	 *
+	 * When the precondition is false, `hasWeight` is recorded `false` and its
+	 * `checkFn` never runs — worth it when `checkFn` is the expensive one, and
+	 * free of any risk to `ONLY`, since a condition whose precondition failed
+	 * would have had nothing left to be true *of* anyway. That's the deal `when`
+	 * makes on your behalf: it doesn't infer that `hasWeight` implies
+	 * `hasProduct`, it trusts you to only gate a condition behind a precondition
+	 * that actually is one.
+	 *
+	 * The skip always happens, whatever `when` is built from and however it's
+	 * written. Narrowing `checkFn`'s `item` needs one more thing: `AND`/`OR`/
+	 * `NOT` have to be called as *values*, not inside the `({ AND }) => ...`
+	 * callback:
+	 *
+	 * ```ts
+	 * .defineCondition({
+	 *   name: "readyToShip",
+	 *   when: AND("hasProduct", "isActive"),
+	 *   // item.product is Product here too — AND, called as a value, carries
+	 *   // enough to resolve the narrowing once TGuards is in scope.
+	 *   checkFn: (item) => item.product.weight > 0,
+	 * })
+	 * ```
+	 *
+	 * The callback form (`when: ({ AND }) => AND(...)`) still works and still
+	 * skips correctly, but leaves `checkFn`'s `item` at the plain input type —
+	 * the same honest fallback `NOT` already gets in a bucket's combinators.
+	 * The difference is a real TypeScript inference limit, not a design choice:
+	 * `checkFn`'s contextual type can't be resolved from a *sibling callback
+	 * parameter's own method call* within the same object literal, because by
+	 * the time that's needed, the compiler has already committed to resolving
+	 * it a different way (confirmed against a minimal, library-free repro). A
+	 * value passed directly — `AND(...)`, no wrapping callback — doesn't hit
+	 * that: its result is inferred before `checkFn` is even looked at, the same
+	 * way a bare name already was.
+	 *
+	 * Trading the destructured callback for a value is also what costs you
+	 * autocomplete on the condition names — `AND` called as a value has no
+	 * engine in scope yet to complete against, only whatever `TGuards` it's
+	 * eventually checked against once it reaches here. `({ AND }) => AND(...)`
+	 * doesn't have that problem: `AND` there is already bound to this engine's
+	 * real condition names. To get *both* — autocomplete on a compound `when`
+	 * *and* narrowing — pass `checkFn` as a second argument instead of a
+	 * property of the same object:
+	 *
+	 * ```ts
+	 * .defineCondition(
+	 *   { name: "readyToShip", when: ({ AND }) => AND("hasProduct", "isActive") },
+	 *   (item) => item.product.weight > 0, // narrowed, and AND completed
+	 * )
+	 * ```
+	 *
+	 * This isn't just a nicer-looking version of the one-object form — it's a
+	 * different call shape TypeScript resolves differently: `when` is now a
+	 * complete argument on its own, so it's fully inferred before `checkFn` —
+	 * the next argument — is ever contextually typed, sidestepping the same
+	 * inference limit the callback form runs into inside one object.
 	 */
 	defineCondition<
 		const TName extends string,
-		TCheck extends (item: TInput) => boolean | Promise<boolean>,
+		const TWhenOperand extends
+			| Operand<NamesOf<TGuards>>
+			| undefined = undefined,
+		TCheck extends (
+			item: TInput & NarrowOf<TWhenOperand, TGuards>,
+		) => boolean | Promise<boolean> = (
+			item: TInput & NarrowOf<TWhenOperand, TGuards>,
+		) => boolean | Promise<boolean>,
 	>(
-		condition: ConditionSpec<TName, TCheck> &
+		condition: ConditionSpec<
+			TName,
+			TCheck,
+			TWhenOperand | ((logic: PreconditionBuilder<TGuards>) => TWhenOperand)
+		> &
 			ValidateCondition<TName, TGuards, TComputed, TBuckets>,
 	): BucketEngine<
 		TInput,
 		TGuards & { [K in TName]: GuardOf<TCheck> },
 		TBuckets,
 		TComputed
-	> {
-		const { name, checkFn } = condition as ConditionSpec<TName, TCheck>;
+	>;
+	defineCondition<
+		const TName extends string,
+		const TWhenOperand extends
+			| Operand<NamesOf<TGuards>>
+			| undefined = undefined,
+		TCheck extends (
+			item: TInput & NarrowOf<TWhenOperand, TGuards>,
+		) => boolean | Promise<boolean> = (
+			item: TInput & NarrowOf<TWhenOperand, TGuards>,
+		) => boolean | Promise<boolean>,
+	>(
+		condition: {
+			readonly name: TName;
+			readonly when?: (logic: PreconditionBuilder<TGuards>) => TWhenOperand;
+		} & ValidateCondition<TName, TGuards, TComputed, TBuckets>,
+		checkFn: TCheck,
+	): BucketEngine<
+		TInput,
+		TGuards & { [K in TName]: GuardOf<TCheck> },
+		TBuckets,
+		TComputed
+	>;
+	defineCondition(
+		condition: {
+			readonly name: string;
+			readonly when?: (
+				logic: PreconditionBuilder<TGuards>,
+			) => Operand<NamesOf<TGuards>> | undefined;
+			readonly checkFn?: unknown;
+		},
+		checkFnArg?: unknown,
+	): unknown {
+		const { name, when } = condition;
+		const checkFn = checkFnArg !== undefined ? checkFnArg : condition.checkFn;
 
 		if (typeof name !== "string" || name.length === 0) {
 			throw new BucketError("A condition needs a non-empty name.");
@@ -226,19 +359,78 @@ export class BucketEngine<
 		}
 		this.assertNameIsFree(name);
 
+		const { whenExpr, wave } = this.resolveWhen(
+			name,
+			when as unknown as
+				| Operand<string>
+				| ((logic: PreconditionBuilder<unknown>) => Operand<string>)
+				| undefined,
+		);
+
 		this.conditions.push({
 			name,
 			// The stored registry is erased: it holds predicates written against
 			// whatever `TInput` was, and only ever receives validated items.
 			checkFn: checkFn as (item: unknown) => boolean | Promise<boolean>,
+			when: whenExpr,
+			wave,
 		});
+		this.waveGroupsCache = undefined;
 
-		return this as unknown as BucketEngine<
-			TInput,
-			TGuards & { [K in TName]: GuardOf<TCheck> },
-			TBuckets,
-			TComputed
-		>;
+		return this;
+	}
+
+	/**
+	 * Turns a `when` — a value or a callback that produces one — into the
+	 * expression it names plus which wave the condition belongs to, or the
+	 * no-precondition default (`undefined`, wave `0`) when there isn't one.
+	 *
+	 * A callback (`when: ({ AND }) => AND("a", "b")`) is always accepted, and
+	 * a bare name works either as a callback (`when: () => "a"`) or a plain
+	 * value (`when: "a"`). Only a standalone `AND`/`OR`/`NOT` result narrows
+	 * `checkFn`'s item — it has to be handed over as the value itself
+	 * (`when: AND("a", "b")`), not wrapped in a callback: see the doc comment
+	 * on `defineCondition` for why the wrapped form can't carry the same
+	 * narrowing through.
+	 */
+	private resolveWhen(
+		conditionName: string,
+		when:
+			| Operand<string>
+			| ((logic: PreconditionBuilder<unknown>) => Operand<string>)
+			| undefined,
+	): { whenExpr: ExprNode<string> | undefined; wave: number } {
+		if (when === undefined) return { whenExpr: undefined, wave: 0 };
+
+		let produced: Operand<string>;
+		if (typeof when === "function") {
+			produced = when(
+				PRECONDITION_LOGIC as unknown as PreconditionBuilder<unknown>,
+			);
+		} else if (typeof when === "string" || typeof when === "object") {
+			produced = when;
+		} else {
+			throw new BucketError(
+				`Condition "${conditionName}"'s "when" needs a condition name, an expression like AND("a", "b"), or a function producing one — like () => "hasProduct" or ({ AND }) => AND("a", "b").`,
+			);
+		}
+		const whenExpr = toExpr(produced);
+
+		const known = new Map(
+			this.conditions.map((existing) => [existing.name, existing.wave]),
+		);
+		let wave = 0;
+		for (const referenced of referencedNames(whenExpr)) {
+			const parentWave = known.get(referenced);
+			if (parentWave === undefined) {
+				throw new BucketError(
+					`Condition "${conditionName}"'s "when" refers to unknown condition "${referenced}". A precondition can only name conditions already defined. Defined: ${[...known.keys()].join(", ") || "(none)"}.`,
+				);
+			}
+			wave = Math.max(wave, parentWave + 1);
+		}
+
+		return { whenExpr, wave };
 	}
 
 	/**
@@ -522,6 +714,12 @@ export class BucketEngine<
 	 * variables, and a computed condition is derived from them rather than
 	 * independently true or false.
 	 *
+	 * A condition with a `when` narrows what gets enumerated in the first place:
+	 * an assignment where it's true but its precondition isn't is not a
+	 * combination any item could actually produce, so it's dropped before the
+	 * bucket rules are even checked — one more thing `when` buys for free
+	 * besides the runtime skip.
+	 *
 	 * Enumerating is exponential, so this refuses to run past 16 conditions
 	 * (65,536 combinations) rather than hanging. Nothing else enumerates.
 	 */
@@ -529,6 +727,7 @@ export class BucketEngine<
 		const conditionNames = this.conditions.map((condition) => condition.name);
 
 		return allAssignments(conditionNames, "missingCombinations()")
+			.filter((baseTruths) => this.reachable(baseTruths))
 			.filter((baseTruths) => {
 				const truths = this.deriveComputed(baseTruths);
 				return this.buckets.every(
@@ -542,6 +741,37 @@ export class BucketEngine<
 						truths.has(name),
 					) as NamesOf<TGuards>[],
 			);
+	}
+
+	/**
+	 * False when some condition is assigned true while its `when` isn't — no
+	 * item can ever produce that assignment, since `checkFn` never even runs
+	 * without the precondition holding first.
+	 */
+	private reachable(baseTruths: ReadonlySet<string>): boolean {
+		return this.conditions.every((condition) => {
+			if (condition.when === undefined || !baseTruths.has(condition.name)) {
+				return true;
+			}
+			return evaluate(condition.when, baseTruths, baseTruths);
+		});
+	}
+
+	/**
+	 * Conditions grouped by {@link StoredCondition.wave}, in ascending order —
+	 * wave 0 first, ungated or not. Cached because it never changes once
+	 * conditions stop being defined, which `.process()` already requires.
+	 */
+	private get waveGroups(): readonly StoredCondition[][] {
+		if (this.waveGroupsCache !== undefined) return this.waveGroupsCache;
+
+		const groups: StoredCondition[][] = [];
+		for (const condition of this.conditions) {
+			while (groups.length <= condition.wave) groups.push([]);
+			groups[condition.wave]?.push(condition);
+		}
+		this.waveGroupsCache = groups;
+		return groups;
 	}
 
 	/**
@@ -699,32 +929,50 @@ export class BucketEngine<
 			item = validated.value as TInput;
 		}
 
-		// An async wrapper so a synchronously thrown checkFn rejects like any
-		// other failure instead of escaping the batch.
-		const settled = await Promise.allSettled(
-			this.conditions.map(async (condition) =>
-				Boolean(await condition.checkFn(item)),
-			),
-		);
-
 		const conditions: Record<string, boolean> = {};
 		const failures: BucketFailure<TInput, string>[] = [];
 		const baseTruths = new Set<string>();
 
-		for (const [index, condition] of this.conditions.entries()) {
-			const result = settled[index];
-			if (result === undefined) continue;
-			if (result.status === "rejected") {
-				failures.push({
-					item,
-					stage: "condition",
-					condition: condition.name,
-					error: toError(result.reason),
-				});
-				continue;
+		// One wave at a time: everything in a wave is independent of everything
+		// else in it, so it runs as one concurrent batch (same as the old flat
+		// Promise.allSettled did for every condition). A later wave only exists
+		// because something in it has a `when`, and that can only name a
+		// condition from an earlier wave — so `baseTruths` already has whatever
+		// this wave's preconditions need by the time it's checked.
+		for (const wave of this.waveGroups) {
+			const runnable = wave.filter((condition) => {
+				if (condition.when === undefined) return true;
+				if (evaluate(condition.when, baseTruths, baseTruths)) return true;
+				// The precondition failed, so this condition is false without
+				// ever calling its checkFn — the whole point of `when`.
+				conditions[condition.name] = false;
+				return false;
+			});
+			if (runnable.length === 0) continue;
+
+			// An async wrapper so a synchronously thrown checkFn rejects like any
+			// other failure instead of escaping the batch.
+			const settled = await Promise.allSettled(
+				runnable.map(async (condition) =>
+					Boolean(await condition.checkFn(item)),
+				),
+			);
+
+			for (const [index, condition] of runnable.entries()) {
+				const result = settled[index];
+				if (result === undefined) continue;
+				if (result.status === "rejected") {
+					failures.push({
+						item,
+						stage: "condition",
+						condition: condition.name,
+						error: toError(result.reason),
+					});
+					continue;
+				}
+				conditions[condition.name] = result.value;
+				if (result.value) baseTruths.add(condition.name);
 			}
-			conditions[condition.name] = result.value;
-			if (result.value) baseTruths.add(condition.name);
 		}
 
 		// A computed condition reads verdicts, so a missing one would make it

@@ -123,5 +123,6 @@ console.log(`poster-01 -> [${one.buckets.join(", ")}]`, one.conditions);
 ## Next
 
 - **Defining Conditions** covers `defineCondition` and `defineInput` in full, including schema validation and error handling.
+- **Preconditions** covers `when` — skipping a condition's `checkFn` when another condition doesn't hold, and narrowing it further when it does.
 - **Buckets and Combinators** covers `AND`, `OR`, `NOT` and `ONLY` in depth.
 - **Type Narrowing** shows how a type-predicate condition makes a bucket hand back a narrower type than the engine's input.

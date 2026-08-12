@@ -37,11 +37,16 @@ Describes the items being sorted. Call it first, before any condition.
 Throws a `BucketError` if called twice, if called after any condition has
 been defined, or if the argument is neither a Standard Schema nor omitted.
 
-## `defineCondition(spec)`
+## `defineCondition(spec)` / `defineCondition(spec, checkFn)`
 
 ```ts
-defineCondition<TName extends string, TCheck>(
-  spec: { name: TName; checkFn: TCheck },
+defineCondition<TName extends string, TWhen, TCheck>(
+  spec: { name: TName; when?: TWhen; checkFn: TCheck },
+): BucketEngine<TInput, TGuards & { [K in TName]: GuardOf<TCheck> }, ...>;
+
+defineCondition<TName extends string, TWhen, TCheck>(
+  spec: { name: TName; when?: TWhen },
+  checkFn: TCheck,
 ): BucketEngine<TInput, TGuards & { [K in TName]: GuardOf<TCheck> }, ...>;
 ```
 
@@ -50,10 +55,27 @@ Registers a named predicate over the item.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `name` | `string` | Becomes part of the engine's type. Must be unique: checked against both conditions and computed conditions. |
+| `when` | see below | Optional. Gates `checkFn` on a precondition — see the Preconditions guide. |
 | `checkFn` | `(item: TInput) => boolean \| Promise<boolean>` | May be async. The return value is coerced with `Boolean()`. Throwing sends that item to `report.errors`. Write it as `(item): item is X => ...` to also narrow the buckets built from it. |
 
-Every condition runs once per item, in parallel, before any bucket. Must be
-defined before the first computed condition and the first bucket. Throws a
+`checkFn` may be a property alongside `when`, or a second argument — the
+second argument form is the only one that gets both autocomplete on a
+compound `when` (`({ AND }) => AND(...)`) *and* narrowing at once; see the
+Preconditions guide for why.
+
+`when` accepts any of: a bare condition name (`() => "hasProduct"`), an
+`AND`/`OR`/`NOT` expression called as a value (`AND("hasProduct", "isActive")`,
+narrows, no autocomplete), or a callback bound to this engine's condition
+names (`({ AND }) => AND(...)`, autocompletes, doesn't narrow when `checkFn`
+is a sibling property). Whichever form, `checkFn` is skipped and the
+condition recorded `false` when the precondition doesn't hold. Throws a
+`BucketError` if `when` names a condition not yet defined.
+
+Every condition runs once per item. Conditions with no `when` — or whose
+`when` only names other ungated conditions — run concurrently, in one wave;
+a `when` that names a condition from a later wave waits for it, so a chain
+of preconditions is staged rather than all fired at once. Must be defined
+before the first computed condition and the first bucket. Throws a
 `BucketError` for: an empty name, a missing `checkFn`, a duplicate name, or
 a condition defined too late in the chain.
 
@@ -125,8 +147,9 @@ Sorts a batch. Requires at least one bucket and an input to have been
 defined; throws a `BucketError` immediately if not.
 
 - Validates each item against the schema (if one was given via
-  `defineInput`), runs every condition in parallel, derives the computed
-  conditions, then evaluates every bucket.
+  `defineInput`), runs every condition — concurrently within each `when`
+  wave, see `defineCondition` above — derives the computed conditions, then
+  evaluates every bucket.
 - Never throws for bad data: a schema rejection or a throwing `checkFn`
   lands the item in `report.errors` and the rest of the batch continues.
 - `options.concurrency` bounds how many items are evaluated at once

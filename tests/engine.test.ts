@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import test, { describe } from "node:test";
 import { BucketEngine, BucketError } from "../main.ts";
-import { type Product, PRODUCTS, productSchema, schema } from "./support.ts";
+import { PRODUCTS, type Product, productSchema, schema } from "./support.ts";
 
 /** The chain every behavioural test starts from. */
 function products() {

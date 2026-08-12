@@ -4,8 +4,8 @@ import { BucketEngine, BucketError } from "../main.ts";
 import {
 	type Equal,
 	type Expect,
-	type Product,
 	PRODUCTS,
+	type Product,
 	productSchema,
 } from "./support.ts";
 

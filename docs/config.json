@@ -12,6 +12,7 @@
 			"label": "Guides",
 			"children": [
 				{ "label": "Defining Conditions", "to": "guides/conditions" },
+				{ "label": "Preconditions", "to": "guides/preconditions" },
 				{ "label": "Buckets and Combinators", "to": "guides/buckets" },
 				{ "label": "Boolean Logic", "to": "guides/boolean-logic" },
 				{ "label": "Computed Conditions", "to": "guides/computed-conditions" },
@@ -29,6 +30,7 @@
 			"children": [
 				{ "label": "BucketEngine", "to": "reference/bucket-engine" },
 				{ "label": "Combinators", "to": "reference/combinators" },
+				{ "label": "Property Predicates", "to": "reference/predicates" },
 				{ "label": "Reports and Errors", "to": "reference/process-output" },
 				{ "label": "ActionEngine", "to": "reference/action-engine" }
 			]

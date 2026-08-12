@@ -9,7 +9,7 @@ import {
 	ONLY,
 	OR,
 } from "../main.ts";
-import { type Product, PRODUCTS, productSchema, tracker } from "./support.ts";
+import { PRODUCTS, type Product, productSchema, tracker } from "./support.ts";
 
 /**
  * Every rule the type system enforces is re-checked at runtime, because

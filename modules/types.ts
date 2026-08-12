@@ -53,8 +53,24 @@ export const DEFAULT_CONCURRENCY = 256;
  * tells the engine what the condition proves, which is what makes buckets built
  * from it know their own item type.
  */
-export interface ConditionSpec<TName extends string, TCheck> {
+export interface ConditionSpec<TName extends string, TCheck, TWhen = never> {
 	readonly name: TName;
+	/**
+	 * A precondition, in the same shape a bucket's `checkFn` returns: a bare
+	 * condition name, or an expression built from the `AND`/`OR`/`NOT` handed to
+	 * the callback. When it evaluates false for an item, this condition is
+	 * recorded `false` without ever calling `checkFn` — and if what it names
+	 * proved a narrower type, `checkFn`'s `item` is typed against that narrower
+	 * type instead of the engine's full input.
+	 *
+	 * `ONLY` isn't offered here: it depends on the complete set of conditions,
+	 * which doesn't exist yet at the point a `when` is written.
+	 *
+	 * Declared before `checkFn` in this interface on purpose: TypeScript
+	 * resolves an object literal's generic properties in declaration order, and
+	 * `checkFn`'s parameter type depends on what `when` infers to.
+	 */
+	readonly when?: TWhen;
 	readonly checkFn: TCheck;
 }
 
@@ -79,7 +95,8 @@ export type GuardOf<TCheck> =
  * engine's input type rather than throwing away what was already known. When a
  * rule did prove something, that answer is used as-is: a type predicate's type
  * is by definition a subtype of what it was checking, so there is nothing left
- * to intersect it with.
+ * to intersect it with. (`AND`'s own {@link IntersectAll} already flattens what
+ * it folds together, via `Prettify` — nothing extra to do for it here.)
  */
 export type BucketItem<TOperand, TGuards, TInput> =
 	unknown extends NarrowOf<TOperand, TGuards>

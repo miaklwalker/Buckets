@@ -221,13 +221,56 @@ Describes the items being sorted. Call it first, before any condition.
 | Option | Type | Notes |
 | --- | --- | --- |
 | `name` | `string` | Becomes part of the engine's type. Must be unique. |
-| `checkFn` | `(item) => boolean \| Promise<boolean>` | May be async. The return value is coerced with `Boolean()`. Throwing sends that one item to `report.errors`. Write it as a type predicate — `(item): item is X` — to also narrow the buckets built from it. |
+| `when` | see below | Optional. Gates `checkFn` on a precondition. |
+| `checkFn` | `(item) => boolean \| Promise<boolean>` | May be async. The return value is coerced with `Boolean()`. Throwing sends that one item to `report.errors`. Write it as a type predicate — `(item): item is X` — to also narrow the buckets built from it. May be a property alongside `when`, or a second argument. |
 
-Every condition is evaluated once per item, in parallel, before any rule runs —
-so a condition used by five buckets still costs one call. Define all of them
-before the first computed condition and the first bucket: `ONLY` means "these
-and nothing else", so a condition added later would quietly change what an
-existing `ONLY` rule matches. The engine rejects it rather than let that happen.
+Every condition is evaluated once per item — concurrently, unless a `when`
+puts it in a later wave — before any rule runs, so a condition used by five
+buckets still costs one call. Define all of them before the first computed
+condition and the first bucket: `ONLY` means "these and nothing else", so a
+condition added later would quietly change what an existing `ONLY` rule
+matches. The engine rejects it rather than let that happen.
+
+### `when`: gating a condition on another
+
+```ts
+.defineCondition({
+  name: "hasProduct",
+  checkFn: (item): item is Listing & { product: Product } =>
+    item.product !== undefined,
+})
+.defineCondition({
+  name: "hasWeight",
+  when: () => "hasProduct",
+  // item.product is Product here, not Product | undefined.
+  checkFn: (item) => item.product.weightKg !== null,
+})
+```
+
+`checkFn` is skipped and the condition recorded `false` whenever the
+precondition doesn't hold — worth it when `checkFn` is the expensive one.
+Three ways to write `when`, each a different narrowing/autocomplete tradeoff:
+
+| Form | Narrows `checkFn`? | Autocompletes names? |
+| --- | --- | --- |
+| A bare name: `when: () => "hasProduct"` | Yes | N/A |
+| A value: `when: AND("hasProduct", "isActive")` | Yes | No |
+| A callback: `when: ({ AND }) => AND(...)` | No | Yes |
+| `checkFn` as a second argument | Yes | Yes |
+
+The last row is the one that gets both, for a compound precondition:
+
+```ts
+.defineCondition(
+  { name: "readyToSell", when: ({ AND }) => AND("hasProduct", "isActive") },
+  (item) => item.product.weightKg > 0, // narrowed, and AND autocompletes
+)
+```
+
+See `docs/guides/preconditions.md` for why the callback form alone can't
+narrow — a real TypeScript limitation, not a design choice — and the rest of
+the detail: chaining, how it interacts with `ONLY` and
+`missingCombinations()`, and what gets rejected.
 
 ## `defineComputedCondition`
 

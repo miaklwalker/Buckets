@@ -61,6 +61,31 @@ const triage = new BucketEngine()
 const report = await triage.process(tickets, { concurrency: 4 });
 ```
 
+## Skipping an async condition with `when`
+
+If `isPaidAccount` is the expensive part, gating it on a cheap precondition
+means it only runs for tickets that could possibly need it:
+
+```ts
+.defineCondition({
+  name: "hasAccount",
+  checkFn: (ticket) => ticket.accountId !== null,
+})
+.defineCondition({
+  name: "payingCustomer",
+  when: () => "hasAccount",
+  checkFn: (ticket) => isPaidAccount(ticket.accountId),
+})
+```
+
+A ticket with no `accountId` never calls `isPaidAccount` at all —
+`payingCustomer` is recorded `false` without it running. This is a real
+compute saving specifically when `checkFn` is the expensive one; for a cheap
+synchronous check, skipping it saves nanoseconds and isn't the point — see
+the Preconditions guide for what `when` buys you beyond the skip. Conditions
+with nothing gating them still run concurrently, in one wave; a `when` adds a
+wave boundary only where a real dependency exists.
+
 ## When a condition throws
 
 Bad data never throws out of `process()`: one unparseable record, or one

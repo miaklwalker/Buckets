@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import test, { describe } from "node:test";
-import { BucketEngine, BucketError } from "../main.ts";
+import { BucketEngine, BucketError, type Prettify } from "../main.ts";
 import {
 	BUCKET_NAMES,
 	type BucketName,
@@ -638,8 +638,12 @@ describe("buckets that require a live listing know it", () => {
 	test("a wrong-field queue hands back a listing whose channel is there", async () => {
 		const report = await catalogueEngine().process(LISTINGS);
 
+		// `wrongPrice` is `AND("hasPrice", "isOnChannel", NOT("correctPrice"))` —
+		// three operands folded together, so the item type comes back through
+		// `Prettify` (one merged object instead of a chain of `&`s), not the
+		// bare `SyncedListing` reference.
 		type _Items = Expect<
-			Equal<typeof report.buckets.wrongPrice, SyncedListing[]>
+			Equal<typeof report.buckets.wrongPrice, Prettify<SyncedListing>[]>
 		>;
 
 		// No null check, no cast: `isOnChannel` is a type predicate, and AND
