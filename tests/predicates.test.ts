@@ -5,6 +5,7 @@ import {
 	definedIn,
 	isPropertyDefined,
 	isPropertyPresent,
+	pathIn,
 	presentIn,
 } from "../main.ts";
 import type { Equal, Expect } from "./support.ts";
@@ -17,6 +18,7 @@ interface Product {
 interface Listing {
 	readonly id: string;
 	readonly product?: Product;
+	readonly alternate?: Product;
 }
 
 describe("isPropertyDefined", () => {
@@ -202,5 +204,114 @@ describe("presentIn", () => {
 		const presentInProduct = presentIn<Product>();
 		// @ts-expect-error "nope" is not a key of Product
 		presentInProduct("nope");
+	});
+});
+
+describe("pathIn", () => {
+	test("isPresent: true only when every hop resolves to a non-null, non-undefined value", () => {
+		const hasWeight = pathIn<Listing>().at("product").isPresent("weightKg");
+		assert.strictEqual(
+			hasWeight({ id: "L1", product: { sku: "a", weightKg: 2 } }),
+			true,
+		);
+		assert.strictEqual(
+			hasWeight({ id: "L2", product: { sku: "a", weightKg: null } }),
+			false,
+		);
+		assert.strictEqual(hasWeight({ id: "L3" }), false);
+	});
+
+	test("isDefined: null passes, only undefined and absence fail", () => {
+		const hasWeight = pathIn<Listing>().at("product").isDefined("weightKg");
+		assert.strictEqual(
+			hasWeight({ id: "L1", product: { sku: "a", weightKg: null } }),
+			true,
+		);
+		assert.strictEqual(hasWeight({ id: "L2" }), false);
+	});
+
+	test("multiple .at() hops walk the full path, in order", () => {
+		interface Wrapper {
+			readonly listing?: Listing;
+		}
+		const hasWeight = pathIn<Wrapper>()
+			.at("listing")
+			.at("product")
+			.isPresent("weightKg");
+		assert.strictEqual(
+			hasWeight({ listing: { id: "L1", product: { sku: "a", weightKg: 2 } } }),
+			true,
+		);
+		assert.strictEqual(hasWeight({}), false);
+		assert.strictEqual(hasWeight({ listing: { id: "L1" } }), false);
+	});
+
+	test("__proto__ and constructor are rejected, not read off the prototype chain", () => {
+		const hasProto = pathIn<Record<string, unknown>>().isDefined("__proto__");
+		const hasCtor = pathIn<Record<string, unknown>>().isDefined("constructor");
+		assert.strictEqual(hasProto({}), false);
+		assert.strictEqual(hasCtor({}), false);
+	});
+
+	test("narrows checkFn's item, used directly as a condition", async () => {
+		const engine = new BucketEngine()
+			.defineInput<Listing>()
+			.defineCondition({
+				name: "hasProduct",
+				checkFn: definedIn<Listing>()("product"),
+			})
+			.defineCondition({
+				name: "hasWeight",
+				when: () => "hasProduct",
+				checkFn: pathIn<Listing>().at("product").isPresent("weightKg"),
+			})
+			.defineBucket({ name: "weighed", checkFn: () => "hasWeight" });
+
+		const report = await engine.process([
+			{ id: "L1", product: { sku: "a", weightKg: 2 } },
+			{ id: "L2", product: { sku: "b", weightKg: null } },
+			{ id: "L3" },
+		]);
+
+		// No `?.`, no cast: `weightKg` is `number`, not `number | null | undefined`
+		// — `.toFixed()` only compiles because the chain narrowed it.
+		assert.deepStrictEqual(
+			report.buckets.weighed.map((l) => l.product.weightKg.toFixed(1)),
+			["2.0"],
+		);
+	});
+
+	test("checkFn's item type is Listing & { product: { weightKg: number } }", () => {
+		const engine = new BucketEngine()
+			.defineInput<Listing>()
+			.defineCondition({
+				name: "hasWeight",
+				checkFn: pathIn<Listing>().at("product").isPresent("weightKg"),
+			})
+			.defineCondition({
+				name: "hasWeightGated",
+				when: () => "hasWeight",
+				checkFn: (listing) => {
+					// Only compiles if `product.weightKg` is `number`, not
+					// `number | null | undefined` — proof the chain narrowed both
+					// the intermediate `product` hop and the final property.
+					type Debug = typeof listing.product.weightKg;
+					type _Narrowed = Expect<Equal<Debug, number>>;
+					return listing.product.weightKg > 0;
+				},
+			});
+
+		assert.deepStrictEqual(engine.conditionNames, [
+			"hasWeight",
+			"hasWeightGated",
+		]);
+	});
+
+	test("rejects a key that isn't actually on the object at that hop", () => {
+		const productPath = pathIn<Listing>().at("product");
+		// @ts-expect-error "nope" is not a key of Product
+		productPath.isPresent("nope");
+		// @ts-expect-error "nope" is not a key of Listing
+		pathIn<Listing>().at("nope");
 	});
 });

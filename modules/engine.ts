@@ -23,8 +23,11 @@ import {
 	type BucketReport,
 	type BucketSpec,
 	type ComputedConditionSpec,
+	type ConditionAssignment,
+	type ConditionBatchReport,
 	type ConditionReport,
 	type ConditionSpec,
+	type ConditionSummary,
 	type GuardOf,
 	type ProcessOptions,
 	type UnmatchedItem,
@@ -50,6 +53,8 @@ interface StoredCondition {
 	 * order because a later one may depend on an earlier one's verdict.
 	 */
 	readonly wave: number;
+	/** As given to {@link ConditionSpec.group}; `undefined` when omitted. */
+	readonly group: string | undefined;
 }
 
 interface StoredBucket {
@@ -203,6 +208,12 @@ export class BucketEngine<
 	 * `checkFn` may be async, and may throw — a throw sends that item to
 	 * `report.errors` and leaves the rest of the batch alone.
 	 *
+	 * `group` is a free-text label with no effect on evaluation — it exists
+	 * purely so {@link processConditions}'s report can cluster related
+	 * conditions together, e.g. `group: "existence check"` for a run of
+	 * `hasX` conditions and `group: "validity check"` for the `isXValid` ones
+	 * that follow them.
+	 *
 	 * All conditions must be defined before the first computed condition and the
 	 * first bucket, because `ONLY()` means "these and nothing else" and so
 	 * depends on the complete set. Adding a condition afterwards would quietly
@@ -233,6 +244,16 @@ export class BucketEngine<
 	 * makes on your behalf: it doesn't infer that `hasWeight` implies
 	 * `hasProduct`, it trusts you to only gate a condition behind a precondition
 	 * that actually is one.
+	 *
+	 * `hasWeight`'s own guard is always `GuardOf<TCheck> & NarrowOf<TWhenOperand,
+	 * TGuards>` — whatever `checkFn` itself proves, intersected with whatever
+	 * `when` already proved — never just the former. This holds regardless of
+	 * how `checkFn` is written, including a predicate built independently of
+	 * this call site (`definedIn<Listing>()("alternate")` knows nothing about
+	 * `hasProduct`) — so a *later* condition gated on `hasWeight` alone still
+	 * sees everything `hasProduct` proved too, without naming it again. Sound by
+	 * construction, not by convention: `checkFn` only ever runs once `when`
+	 * held, so conjoining the two proofs can never be wrong.
 	 *
 	 * The skip always happens, whatever `when` is built from and however it's
 	 * written. Narrowing `checkFn`'s `item` needs one more thing: `AND`/`OR`/
@@ -302,7 +323,9 @@ export class BucketEngine<
 			ValidateCondition<TName, TGuards, TComputed, TBuckets>,
 	): BucketEngine<
 		TInput,
-		TGuards & { [K in TName]: GuardOf<TCheck> },
+		TGuards & {
+			[K in TName]: GuardOf<TCheck> & NarrowOf<TWhenOperand, TGuards>;
+		},
 		TBuckets,
 		TComputed
 	>;
@@ -320,11 +343,14 @@ export class BucketEngine<
 		condition: {
 			readonly name: TName;
 			readonly when?: (logic: PreconditionBuilder<TGuards>) => TWhenOperand;
+			readonly group?: string;
 		} & ValidateCondition<TName, TGuards, TComputed, TBuckets>,
 		checkFn: TCheck,
 	): BucketEngine<
 		TInput,
-		TGuards & { [K in TName]: GuardOf<TCheck> },
+		TGuards & {
+			[K in TName]: GuardOf<TCheck> & NarrowOf<TWhenOperand, TGuards>;
+		},
 		TBuckets,
 		TComputed
 	>;
@@ -334,11 +360,12 @@ export class BucketEngine<
 			readonly when?: (
 				logic: PreconditionBuilder<TGuards>,
 			) => Operand<NamesOf<TGuards>> | undefined;
+			readonly group?: string;
 			readonly checkFn?: unknown;
 		},
 		checkFnArg?: unknown,
 	): unknown {
-		const { name, when } = condition;
+		const { name, when, group } = condition;
 		const checkFn = checkFnArg !== undefined ? checkFnArg : condition.checkFn;
 
 		if (typeof name !== "string" || name.length === 0) {
@@ -367,6 +394,12 @@ export class BucketEngine<
 				| undefined,
 		);
 
+		if (group !== undefined && typeof group !== "string") {
+			throw new BucketError(
+				`Condition "${name}"'s "group" needs to be a string, if given.`,
+			);
+		}
+
 		this.conditions.push({
 			name,
 			// The stored registry is erased: it holds predicates written against
@@ -374,6 +407,7 @@ export class BucketEngine<
 			checkFn: checkFn as (item: unknown) => boolean | Promise<boolean>,
 			when: whenExpr,
 			wave,
+			group,
 		});
 		this.waveGroupsCache = undefined;
 
@@ -895,10 +929,135 @@ export class BucketEngine<
 	}
 
 	/**
-	 * Validate one item, run every condition, derive the computed ones from
-	 * those verdicts, then evaluate every bucket's rule.
+	 * Run every condition over a batch without requiring a single bucket to be
+	 * defined — for trying out a set of conditions before there is a rule to
+	 * sort by, or for a report over the conditions themselves rather than the
+	 * buckets built from them.
+	 *
+	 * Otherwise behaves like {@link process}: validates against the schema (if
+	 * `defineInput` was given one), evaluates conditions in `when` waves, and
+	 * derives the computed ones from those verdicts. Never throws for bad data
+	 * — a schema rejection or a throwing `checkFn` lands that item in `errors`
+	 * and the batch continues.
+	 *
+	 * `summary` tallies how often each condition — plain and computed alike —
+	 * came out true versus false across the batch, grouped by whatever `group`
+	 * was given to {@link ConditionSpec.group}; hand it to
+	 * {@link formatConditionReport} for a table:
+	 *
+	 * ```ts
+	 * const report = await engine.processConditions(items);
+	 * console.log(formatConditionReport(report));
+	 * ```
+	 *
+	 * Requires only `.defineInput()` — unlike {@link process} and
+	 * {@link processOne}, no bucket has to exist yet.
 	 */
-	private async evaluateItem(raw: TInput): Promise<Outcome<TInput>> {
+	async processConditions(
+		items: readonly TInput[],
+		options: ProcessOptions = {},
+	): Promise<ConditionBatchReport<TInput, NamesOf<TGuards & TComputed>>> {
+		if (!this.inputDefined) {
+			throw new BucketError(
+				"No input defined. Call .defineInput(schema) before .processConditions().",
+			);
+		}
+		if (!Array.isArray(items)) {
+			throw new BucketError(
+				".processConditions() expects an array of items. Use .processOne() for a single item.",
+			);
+		}
+
+		const concurrency = resolveConcurrency(options.concurrency);
+		const results: ConditionAssignment<TInput, string>[] = [];
+		const errors: BucketFailure<TInput, string>[] = [];
+
+		const outcomes = await mapWithConcurrency(items, concurrency, (item) =>
+			this.evaluateConditions(item),
+		);
+
+		for (const outcome of outcomes) {
+			if (outcome.kind === "failed") {
+				errors.push(...outcome.failures);
+				continue;
+			}
+			results.push({
+				item: outcome.item,
+				conditions: outcome.conditions as ConditionReport<string>,
+			});
+		}
+
+		return {
+			results: results as unknown as readonly ConditionAssignment<
+				TInput,
+				NamesOf<TGuards & TComputed>
+			>[],
+			errors: errors as unknown as readonly BucketFailure<
+				TInput,
+				NamesOf<TGuards & TComputed>
+			>[],
+			summary: this.summarizeConditions(
+				results,
+			) as unknown as readonly ConditionSummary<NamesOf<TGuards & TComputed>>[],
+		};
+	}
+
+	/**
+	 * How often each condition — plain and computed — came out true versus
+	 * false across `results`, grouped by {@link StoredCondition.group}. A
+	 * computed condition always reports `group: undefined`, since it has none
+	 * of its own. Every known condition appears even if `results` is empty —
+	 * as `{ passing: 0, failing: 0 }` — so a report is never missing a row
+	 * just because a batch was.
+	 */
+	private summarizeConditions(
+		results: readonly { readonly conditions: Record<string, boolean> }[],
+	): ConditionSummary<string>[] {
+		const groupOf = new Map<string, string | undefined>();
+		for (const condition of this.conditions) {
+			groupOf.set(condition.name, condition.group);
+		}
+		for (const computed of this.computed) groupOf.set(computed.name, undefined);
+
+		const tallies = new Map<string, { passing: number; failing: number }>();
+		for (const name of groupOf.keys()) {
+			tallies.set(name, { passing: 0, failing: 0 });
+		}
+
+		for (const result of results) {
+			for (const [name, passed] of Object.entries(result.conditions)) {
+				const tally = tallies.get(name);
+				if (tally === undefined) continue;
+				if (passed) tally.passing++;
+				else tally.failing++;
+			}
+		}
+
+		return [...groupOf.entries()].map(([name, group]) => {
+			const tally = tallies.get(name) ?? { passing: 0, failing: 0 };
+			return { name, group, passing: tally.passing, failing: tally.failing };
+		});
+	}
+
+	/**
+	 * Validate one item and run every condition, deriving the computed ones
+	 * from those verdicts — everything {@link evaluateItem} needs before it
+	 * evaluates buckets, and all {@link processConditions} needs since it has
+	 * none to evaluate.
+	 */
+	private async evaluateConditions(raw: TInput): Promise<
+		| {
+				readonly kind: "classified";
+				readonly item: TInput;
+				readonly conditions: Record<string, boolean>;
+				readonly baseTruths: ReadonlySet<string>;
+				readonly truths: ReadonlySet<string>;
+		  }
+		| {
+				readonly kind: "failed";
+				readonly failures: readonly BucketFailure<TInput, string>[];
+		  }
+	> {
 		let item = raw;
 
 		if (this.schema !== undefined) {
@@ -981,13 +1140,27 @@ export class BucketEngine<
 
 		const truths = this.deriveComputed(baseTruths, conditions);
 
+		return { kind: "classified", item, conditions, baseTruths, truths };
+	}
+
+	/**
+	 * As {@link evaluateConditions}, plus which buckets the item landed in —
+	 * what {@link process} and {@link processOne} need on top of the
+	 * conditions themselves.
+	 */
+	private async evaluateItem(raw: TInput): Promise<Outcome<TInput>> {
+		const outcome = await this.evaluateConditions(raw);
+		if (outcome.kind === "failed") return outcome;
+
 		return {
 			kind: "classified",
-			item,
+			item: outcome.item,
 			buckets: this.buckets
-				.filter((bucket) => evaluate(bucket.expr, truths, baseTruths))
+				.filter((bucket) =>
+					evaluate(bucket.expr, outcome.truths, outcome.baseTruths),
+				)
 				.map((bucket) => bucket.name),
-			conditions,
+			conditions: outcome.conditions,
 		};
 	}
 

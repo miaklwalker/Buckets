@@ -71,6 +71,15 @@ export interface ConditionSpec<TName extends string, TCheck, TWhen = never> {
 	 * `checkFn`'s parameter type depends on what `when` infers to.
 	 */
 	readonly when?: TWhen;
+	/**
+	 * A free-text label for grouping this condition in a
+	 * {@link ConditionBatchReport} — e.g. `"existence check"`, `"validity
+	 * check"`. Purely descriptive: it plays no role in evaluation, `when`,
+	 * `ONLY`, or anything else the engine does with the condition's verdict.
+	 * `undefined` when omitted, which {@link processConditions}'s report
+	 * renders as its own group.
+	 */
+	readonly group?: string;
 	readonly checkFn: TCheck;
 }
 
@@ -160,6 +169,40 @@ export interface ComputedConditionSpec<
 export type ConditionReport<TConditions extends string> = Readonly<
 	Record<TConditions, boolean>
 >;
+
+/**
+ * One item's condition verdicts, as collected by {@link processConditions} —
+ * the condition-only counterpart of {@link BucketAssignment}, with no
+ * `buckets` field since none are required to produce one.
+ */
+export interface ConditionAssignment<TInput, TConditions extends string> {
+	readonly item: TInput;
+	readonly conditions: ConditionReport<TConditions>;
+}
+
+/**
+ * How often one condition came out true versus false across a
+ * {@link processConditions} batch. `group` carries whatever was given to
+ * {@link ConditionSpec.group}, unchanged; a computed condition — which has no
+ * `group` of its own — always reports `undefined`.
+ */
+export interface ConditionSummary<TConditions extends string> {
+	readonly name: TConditions;
+	readonly group: string | undefined;
+	readonly passing: number;
+	readonly failing: number;
+}
+
+/**
+ * What {@link processConditions} resolves to: every item's verdicts, any
+ * condition failures, and the pass/fail tally per condition that
+ * {@link formatConditionReport} renders into a table.
+ */
+export interface ConditionBatchReport<TInput, TConditions extends string> {
+	readonly results: readonly ConditionAssignment<TInput, TConditions>[];
+	readonly errors: readonly BucketFailure<TInput, TConditions>[];
+	readonly summary: readonly ConditionSummary<TConditions>[];
+}
 
 /**
  * An item that answered every condition without error but matched no bucket.

@@ -270,3 +270,130 @@ export function presentIn<TObject>() {
 			predicate(item);
 	};
 }
+
+/**
+ * The nested object a path of keys proves, ending in `TValue` at the last
+ * one: `NestedPath<["product", "weightKg"], number>` is
+ * `{ product: { weightKg: number } }`. What {@link pathIn} builds up one
+ * `.at()` at a time, so the final `.isDefined()`/`.isPresent()` can hand back
+ * a single type predicate instead of you writing one.
+ */
+type NestedPath<
+	TPath extends readonly PropertyKey[],
+	TValue,
+> = TPath extends readonly [
+	infer THead extends PropertyKey,
+	...infer TTail extends readonly PropertyKey[],
+]
+	? {
+			readonly [K in THead]: TTail extends readonly []
+				? TValue
+				: NestedPath<TTail, TValue>;
+		}
+	: TValue;
+
+/**
+ * A property path being built up by {@link pathIn}, one `.at()` at a time.
+ * `TRoot` is the object the final predicate will run on; `TCurrent` is what's
+ * known at the *current* step, which is what the next `.at()`/`.isDefined()`/
+ * `.isPresent()` checks a key against.
+ */
+export interface PathPresence<
+	TRoot,
+	TPath extends readonly PropertyKey[],
+	TCurrent,
+> {
+	/**
+	 * Descend into `key`, checked for existence at runtime the same way
+	 * {@link isPropertyDefined} checks any other property — this isn't a
+	 * promise taken on faith, every step is verified when the chain finally
+	 * runs.
+	 */
+	at<Key extends keyof TCurrent>(
+		key: Key,
+	): PathPresence<TRoot, [...TPath, Key], NonNullable<TCurrent[Key]>>;
+
+	/**
+	 * Finish the chain: `key` must be defined (not `undefined`) on whatever
+	 * `.at(...)` reached, same as {@link isPropertyDefined}. Returns the
+	 * predicate itself, ready to hand to `checkFn` — narrowing `TRoot` by the
+	 * whole path, not just this last step.
+	 */
+	isDefined<Key extends keyof TCurrent>(
+		key: Key,
+	): (
+		item: TRoot,
+	) => item is TRoot &
+		NestedPath<[...TPath, Key], Exclude<TCurrent[Key], undefined>>;
+
+	/** As {@link isDefined}, and also excludes `null` on the last step. */
+	isPresent<Key extends keyof TCurrent>(
+		key: Key,
+	): (
+		item: TRoot,
+	) => item is TRoot & NestedPath<[...TPath, Key], NonNullable<TCurrent[Key]>>;
+}
+
+/** Every step of `path`, in order, or `undefined` the moment one is missing. */
+function walkPath(item: unknown, path: readonly PropertyKey[]): unknown {
+	let current: unknown = item;
+	for (const key of path) {
+		if (key === "__proto__" || key === "constructor") return undefined;
+		if (
+			current === null ||
+			(typeof current !== "object" && typeof current !== "function")
+		) {
+			return undefined;
+		}
+		const descriptor = Object.getOwnPropertyDescriptor(current, key);
+		if (descriptor === undefined || !("value" in descriptor)) return undefined;
+		current = descriptor.value;
+	}
+	return current;
+}
+
+function makePathPresence(
+	path: readonly PropertyKey[],
+	// biome-ignore lint/suspicious/noExplicitAny: type-erased builder, same as definedIn/presentIn's own cast
+): PathPresence<any, any, any> {
+	return {
+		at: (key: PropertyKey) => makePathPresence([...path, key]),
+		isDefined: (key: PropertyKey) => {
+			const fullPath = [...path, key];
+			return (item: unknown) => walkPath(item, fullPath) !== undefined;
+		},
+		isPresent: (key: PropertyKey) => {
+			const fullPath = [...path, key];
+			return (item: unknown) => {
+				const value = walkPath(item, fullPath);
+				return value !== null && value !== undefined;
+			};
+		},
+		// biome-ignore lint/suspicious/noExplicitAny: type-erased builder, same as definedIn/presentIn's own cast
+	} as PathPresence<any, any, any>;
+}
+
+/**
+ * The chainable counterpart of {@link definedIn}/{@link presentIn}, for a
+ * property that isn't on `checkFn`'s own parameter but somewhere *inside*
+ * it — `item.product.weightKg`, not `item.weightKg`. One `.at(...)` per hop,
+ * finishing with `.isDefined(...)` or `.isPresent(...)`:
+ *
+ * ```ts
+ * .defineCondition({
+ *   name: "hasWeight",
+ *   when: () => "hasProduct",
+ *   checkFn: pathIn<Listing>().at("product").isPresent("weightKg"),
+ * })
+ * ```
+ *
+ * No hand-written `(item): item is typeof item & { product: { weightKg:
+ * number } } => ...` — the chain builds that predicate for you, the same way
+ * `definedIn`/`presentIn` build one for a single property. Every hop is a
+ * real check, in order, the moment the finished predicate actually runs —
+ * `.at("product")` isn't assuming `hasProduct` already ran, it's verifying it
+ * itself, same as `isPropertyDefined` would.
+ */
+export function pathIn<TObject>(): PathPresence<TObject, [], TObject> {
+	return makePathPresence([]);
+}

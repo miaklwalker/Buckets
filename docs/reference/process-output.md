@@ -47,6 +47,54 @@ schema applied. `buckets` lists every bucket the item satisfied, in
 definition order; an empty array is the single-item equivalent of an
 `unmatched` entry.
 
+## `ConditionBatchReport`
+
+What `processConditions()` resolves to — `BucketReport`'s counterpart for
+when no bucket is defined:
+
+```ts
+interface ConditionBatchReport<TInput, TConditions extends string> {
+  readonly results: readonly ConditionAssignment<TInput, TConditions>[];
+  readonly errors: readonly BucketFailure<TInput, TConditions>[];
+  readonly summary: readonly ConditionSummary<TConditions>[];
+}
+```
+
+| Field | Type | Contains |
+| --- | --- | --- |
+| `results` | `ConditionAssignment[]` | Every item's own verdicts, in input order. |
+| `errors` | `BucketFailure[]` | Items that couldn't be classified — same meaning as `BucketReport.errors`. |
+| `summary` | `ConditionSummary[]` | Pass/fail tally per condition across the whole batch, in definition order. What `formatConditionReport()` renders. |
+
+## `ConditionAssignment`
+
+```ts
+interface ConditionAssignment<TInput, TConditions extends string> {
+  readonly item: TInput;
+  readonly conditions: ConditionReport<TConditions>;
+}
+```
+
+One item's verdicts — the condition-only counterpart of `BucketAssignment`,
+with no `buckets` field since `processConditions()` requires none to exist.
+
+## `ConditionSummary`
+
+```ts
+interface ConditionSummary<TConditions extends string> {
+  readonly name: TConditions;
+  readonly group: string | undefined;
+  readonly passing: number;
+  readonly failing: number;
+}
+```
+
+How often one condition — plain or computed — came out true versus false
+across a `processConditions()` batch. `group` carries whatever was given to
+`defineCondition`'s `group`, unchanged; a computed condition always reports
+`group: undefined`, since it has none of its own. Every condition appears
+here even when `results` is empty, as `{ passing: 0, failing: 0 }`.
+
 ## `ConditionReport`
 
 ```ts
@@ -54,8 +102,8 @@ type ConditionReport<TConditions extends string> = Readonly<Record<TConditions, 
 ```
 
 Every condition's verdict for one item, keyed by name: plain conditions and
-computed conditions both. This is the type of `UnmatchedItem.conditions` and
-`BucketAssignment.conditions`.
+computed conditions both. This is the type of `UnmatchedItem.conditions`,
+`BucketAssignment.conditions`, and `ConditionAssignment.conditions`.
 
 ## `UnmatchedItem`
 
@@ -130,7 +178,7 @@ caller (or a TypeScript cast) can walk straight past the compile-time checks.
 - `defineInput` called twice, after a condition has been defined, or with an
   argument that isn't a Standard Schema.
 - `process()` or `processOne()` called before an input or any bucket is
-  defined.
+  defined. `processConditions()` only requires an input — it needs no bucket.
 - A `concurrency` that isn't a positive integer or `Infinity`.
 
 ### What is deliberately *not* an error

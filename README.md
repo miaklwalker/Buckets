@@ -222,6 +222,7 @@ Describes the items being sorted. Call it first, before any condition.
 | --- | --- | --- |
 | `name` | `string` | Becomes part of the engine's type. Must be unique. |
 | `when` | see below | Optional. Gates `checkFn` on a precondition. |
+| `group` | `string` | Optional, purely descriptive. Labels this condition's row in a `processConditions()` report — plays no part in evaluation. |
 | `checkFn` | `(item) => boolean \| Promise<boolean>` | May be async. The return value is coerced with `Boolean()`. Throwing sends that one item to `report.errors`. Write it as a type predicate — `(item): item is X` — to also narrow the buckets built from it. May be a property alongside `when`, or a second argument. |
 
 Every condition is evaluated once per item — concurrently, unless a `when`
@@ -390,6 +391,48 @@ means it satisfied none. Unlike `process`, this **throws** on a validation or
 condition failure: with one item there is no rest-of-the-batch to protect, and a
 caller handling one record wants the failure at the call site.
 
+## `processConditions(items, options?)`
+
+Runs every condition over a batch, without requiring a single bucket to be
+defined — only `.defineInput()`. For trying out conditions before there's a
+rule to sort by, or for a report over the conditions themselves:
+
+```ts
+const listings = new BucketEngine()
+  .defineInput<Listing>()
+  .defineCondition({
+    name: "hasProduct",
+    group: "existence check",
+    checkFn: (l): l is Listing & { product: Product } => l.product !== null,
+  })
+  .defineCondition({ name: "hasBrand", group: "existence check", checkFn: (l) => l.brand !== null });
+
+const report = await listings.processConditions(myListings);
+console.log(formatConditionReport(report));
+```
+
+| Field | Type | Contains |
+| --- | --- | --- |
+| `results` | `{ item, conditions }[]` | Every item's own verdicts, in input order. |
+| `errors` | `{ item, stage, condition?, error }[]` | Same shape and meaning as `process()`'s `errors`. |
+| `summary` | `{ name, group, passing, failing }[]` | How often each condition — plain and computed alike — came out true versus false across the batch. `group` is whatever was given to `defineCondition`'s `group`, or `undefined` for an ungrouped or computed condition. |
+
+`formatConditionReport(report, { barWidth? })` renders `summary` as a table,
+grouped by `group` (ungrouped conditions sort last), with a block-drawn bar
+showing what fraction of the batch passed:
+
+```
+┌─────────────────┬────────────┬─────────┬─────────┬──────────────────────┐
+│ Group           │ Condition  │ Passing │ Failing │ Distribution         │
+├─────────────────┼────────────┼─────────┼─────────┼──────────────────────┤
+│ existence check │ hasProduct │     150 │     150 │ ██████████░░░░░░░░░░ │
+│ existence check │ hasBrand   │     300 │       0 │ ████████████████████ │
+└─────────────────┴────────────┴─────────┴─────────┴──────────────────────┘
+```
+
+`printConditionReport(report, options?)` is the same thing written straight
+to `console.log`. See `examples/processConditions.ts` for a full run.
+
 ## Introspection
 
 | Member | Returns |
@@ -415,7 +458,8 @@ from the `define*` call that made them, so a misconfigured engine can't reach
 - a `checkFn` returning something that is neither a condition name nor an
   expression, or `AND()`/`OR()` with no operands
 - `defineInput` called twice, after a condition, or with a non–Standard Schema
-- `process` or `processOne` before an input or any bucket is defined
+- `process` or `processOne` before an input or any bucket is defined —
+  `processConditions` needs only an input, no bucket
 - a `concurrency` that isn't a positive integer or `Infinity`
 
 When a `BucketError` comes from schema validation it carries the library's raw

@@ -1,4 +1,4 @@
-import { BucketEngine, definedIn, presentIn } from "../main.ts";
+import { BucketEngine, definedIn, pathIn } from "../main.ts";
 
 interface Product {
 	readonly sku: string;
@@ -41,74 +41,47 @@ const listings = new BucketEngine()
 	})
 	.defineCondition({
 		name: "hasAlternate",
-		checkFn: presentIn<Listing>()("alternate"),
+		checkFn: definedIn<Listing>()("alternate"),
 	})
-	// `when` names the precondition. Inside `checkFn`, `listing.product` is
-	// `Product` — not `Product | undefined` — because `hasProduct` already
-	// proved it before this ever runs.
-	//
-	// `weightKg` is `number | null`, one level *into* `product` rather than a
-	// property of `listing` itself, so `definedIn`/`presentIn` — which check a
-	// property of whatever `checkFn`'s own parameter is — don't fit directly:
-	// there's no `definedIn<Listing>()("product.weightKg")`, because `Listing`
-	// doesn't have a `weightKg` of its own to check.
-	//
-	// Delegating the call to `presentIn<Product>()("weightKg")` still reuses
-	// its real runtime logic (the property-descriptor check, the null check)
-	// on `listing.product` — but the *predicate* that narrows `hasWeight`
-	// itself has to be written on `listing`, explicitly: TypeScript's own
-	// predicate inference (the thing that made `isActive` below need no
-	// annotation) only reaches one property deep. A checkFn whose body is
-	// `listing.product.weightKg !== null` gets inferred fine *as a boolean* —
-	// it runs correctly either way — but the inference stops short of also
-	// making `hasWeight` itself a predicate, so nothing downstream would ever
-	// see `weightKg` as narrowed. Delegating to another function call (as
-	// `presentIn(...)(...)` here) has the same limit, for the same reason:
-	// inference only follows a return expression written out directly, not a
-	// call to something else that happens to be a predicate.
 	.defineCondition({
 		name: "hasWeight",
 		when: () => "hasProduct",
-		checkFn: (
-			listing,
-		): listing is typeof listing & { product: Record<"weightKg", number> } =>
-			presentIn<Product>()("weightKg")(listing.product),
+		// `pathIn` walks straight to `product.weightKg` and produces the
+		// predicate itself — no hand-written `(listing): listing is typeof
+		// listing & { product: { weightKg: number } } => ...` needed.
+		//
+		// `.isPresent`, not `.isDefined`: weightKg is `number | null`, and a
+		// `null` weight is not a real weight — `.isDefined` alone would let it
+		// through, since it only rejects `undefined`.
+		checkFn: pathIn<Listing>().at("product").isPresent("weightKg"),
 	})
 	.defineCondition({
 		name: "hasAltWeight",
 		when: () => "hasAlternate",
-		checkFn: (
-			listing,
-		): listing is typeof listing & { alternate: Record<"weightKg", number> } =>
-			presentIn<Product>()("weightKg")(listing.alternate),
+		checkFn: pathIn<Listing>().at("alternate").isPresent("weightKg"),
 	})
 	.defineCondition({
 		name: "isActive",
 		when: () => "hasProduct",
 		checkFn: (listing) => listing.product.active,
 	})
-	// A precondition can be a combination, not just one name. `checkFn` as a
-	// second argument, instead of a property alongside `when`, is what gets
-	// you both things at once here: `AND` is the real, destructured
-	// combinator — so `"hasAlternate"`/`"hasProduct"`/`"hasAltWeight"`
-	// autocomplete against this engine's actual condition names — and the
-	// result still narrows `checkFn`'s `listing`, same as the value-position
-	// form does. (The one-object form with `when: AND(...)` as a value also
-	// narrows, but `AND` there has no engine in scope yet to complete against.)
 	.defineCondition(
 		{
 			name: "passesFraudCheck",
-			when: ({ AND }) => AND(
-				"hasAlternate", "hasProduct",
-				"hasAltWeight", 'hasWeight'
-			),
+			when: ({ AND }) =>
+				AND(
+					// "hasProduct",
+					"hasWeight", 
+					"hasAlternate",
+					"hasAltWeight"
+				),
 		},
 		async (listing) => {
 			fraudChecks += 1;
 			// Standing in for an expensive call — a real one might hit a
 			// third-party API keyed on `listing.product.sku`.
 			console.log(listing.alternate.weightKg);
-			console.log(listing.product.weightKg)
+			console.log(listing.product.weightKg);
 			await new Promise((resolve) => setTimeout(resolve, 5));
 			return listing.product.sku.length > 3;
 		},

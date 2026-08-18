@@ -42,12 +42,12 @@ been defined, or if the argument is neither a Standard Schema nor omitted.
 ```ts
 defineCondition<TName extends string, TWhen, TCheck>(
   spec: { name: TName; when?: TWhen; checkFn: TCheck },
-): BucketEngine<TInput, TGuards & { [K in TName]: GuardOf<TCheck> }, ...>;
+): BucketEngine<TInput, TGuards & { [K in TName]: GuardOf<TCheck> & NarrowOf<TWhen, TGuards> }, ...>;
 
 defineCondition<TName extends string, TWhen, TCheck>(
   spec: { name: TName; when?: TWhen },
   checkFn: TCheck,
-): BucketEngine<TInput, TGuards & { [K in TName]: GuardOf<TCheck> }, ...>;
+): BucketEngine<TInput, TGuards & { [K in TName]: GuardOf<TCheck> & NarrowOf<TWhen, TGuards> }, ...>;
 ```
 
 Registers a named predicate over the item.
@@ -56,6 +56,7 @@ Registers a named predicate over the item.
 | --- | --- | --- |
 | `name` | `string` | Becomes part of the engine's type. Must be unique: checked against both conditions and computed conditions. |
 | `when` | see below | Optional. Gates `checkFn` on a precondition — see the Preconditions guide. |
+| `group` | `string` | Optional, purely descriptive. Plays no role in evaluation — it only labels the condition's row in a `processConditions()` report, e.g. `group: "existence check"`. |
 | `checkFn` | `(item: TInput) => boolean \| Promise<boolean>` | May be async. The return value is coerced with `Boolean()`. Throwing sends that item to `report.errors`. Write it as `(item): item is X => ...` to also narrow the buckets built from it. |
 
 `checkFn` may be a property alongside `when`, or a second argument — the
@@ -70,6 +71,14 @@ names (`({ AND }) => AND(...)`, autocompletes, doesn't narrow when `checkFn`
 is a sibling property). Whichever form, `checkFn` is skipped and the
 condition recorded `false` when the precondition doesn't hold. Throws a
 `BucketError` if `when` names a condition not yet defined.
+
+Whatever a gated condition's `when` proved is always folded into its own
+guard — `GuardOf<TCheck> & NarrowOf<TWhen, TGuards>`, not `GuardOf<TCheck>`
+alone — regardless of whether `checkFn`'s own predicate mentions it. This is
+what lets a chain of preconditions be gated on just the nearest link
+(`when: () => "hasWeight"`, not `when: () => AND("hasProduct", "hasWeight")`)
+without losing what an earlier link in the chain proved; see the
+Preconditions guide.
 
 Every condition runs once per item. Conditions with no `when` — or whose
 `when` only names other ungated conditions — run concurrently, in one wave;
@@ -172,6 +181,66 @@ means it satisfied none: the single-item equivalent of `unmatched`.
 
 Unlike `process`, this **throws** a `BucketError` on a validation or
 condition failure: with one item, there's no rest-of-the-batch to protect.
+
+## `processConditions(items, options?)`
+
+```ts
+processConditions(
+  items: readonly TInput[],
+  options?: { concurrency?: number },
+): Promise<ConditionBatchReport<TInput, TGuards & TComputed>>;
+```
+
+Runs every condition over a batch, the same way `process()` does, but
+**requires no bucket** — only `.defineInput()`. Useful for trying out a set
+of conditions before there's a rule to sort by, or for a report over the
+conditions themselves.
+
+Resolves to:
+
+```ts
+interface ConditionBatchReport<TInput, TConditions> {
+  readonly results: readonly { item: TInput; conditions: ConditionReport<TConditions> }[];
+  readonly errors: readonly BucketFailure<TInput, TConditions>[];
+  readonly summary: readonly { name: TConditions; group: string | undefined; passing: number; failing: number }[];
+}
+```
+
+- `results` — every item's own verdicts, in input order. What `errors`
+  claims an item is excluded here, same as `process()`'s `unmatched`/`errors`
+  split.
+- `errors` — items that couldn't be classified: a schema rejection, or a
+  `checkFn` that threw. As in `process()`, one throwing condition drops the
+  whole item, not just that condition's verdict.
+- `summary` — how often each condition, plain and computed alike, came out
+  true versus false across the batch. `group` carries whatever was given to
+  `defineCondition`'s `group`, or `undefined` for an ungrouped condition and
+  for every computed condition, which has no `group` of its own.
+
+Pass `summary` — or the whole report — to `formatConditionReport()` /
+`printConditionReport()` (from `"@michaelrwalker/buckets"`) for a table:
+
+```ts
+import { formatConditionReport } from "@michaelrwalker/buckets";
+
+const report = await engine.processConditions(items);
+console.log(formatConditionReport(report));
+```
+
+```
+┌─────────────────┬────────────┬─────────┬─────────┬──────────────────────┐
+│ Group           │ Condition  │ Passing │ Failing │ Distribution         │
+├─────────────────┼────────────┼─────────┼─────────┼──────────────────────┤
+│ existence check │ hasProduct │     150 │     150 │ ██████████░░░░░░░░░░ │
+│ existence check │ hasBrand   │     300 │       0 │ ████████████████████ │
+└─────────────────┴────────────┴─────────┴─────────┴──────────────────────┘
+```
+
+Rows sort by `group`, in the order each group was first seen; an ungrouped
+condition sorts last and prints `—`. `{ barWidth?: number }` (default `20`)
+controls how wide the distribution bar is; `printConditionReport` is the
+same thing written straight to `console.log`. See the Reports and Errors
+reference for `ConditionSummary` and `ConditionAssignment`.
 
 ## Introspection
 

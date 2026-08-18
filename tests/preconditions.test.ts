@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import test, { describe } from "node:test";
-import { AND, BucketEngine, BucketError } from "../main.ts";
+import { AND, BucketEngine, BucketError, definedIn } from "../main.ts";
 import type { Equal, Expect } from "./support.ts";
 
 interface Product {
@@ -415,5 +415,51 @@ describe("defineCondition with `when`", () => {
 
 		assert.strictEqual(report.errors.length, 1);
 		assert.strictEqual(report.errors[0]?.condition, "hasWeight");
+	});
+
+	test("a gated condition's guard always includes what its precondition proved, even if its own predicate doesn't mention it", () => {
+		interface Alt {
+			readonly id: string;
+			readonly product?: Product;
+			readonly alternate?: Product;
+		}
+
+		const engine = new BucketEngine()
+			.defineInput<Alt>()
+			.defineCondition({
+				name: "hasProduct",
+				checkFn: (item): item is Alt & { product: Product } =>
+					item.product !== undefined,
+			})
+			.defineCondition({
+				name: "hasAlternate",
+				when: () => "hasProduct",
+				// `definedIn<Alt>()` is typed against the bare input, `Alt` — a
+				// function built independently of this call site, with no way to
+				// know `hasProduct` already ran. On its own it says nothing about
+				// `product`. `hasAlternate`'s own guard still includes it, because
+				// `when` already proved it before this ever ran.
+				checkFn: definedIn<Alt>()("alternate"),
+			})
+			.defineCondition({
+				name: "hasBoth",
+				// Gated on "hasAlternate" alone — never names "hasProduct".
+				when: () => "hasAlternate",
+				checkFn: (item) => {
+					// Only compiles if `item.product` is `Product`, not
+					// `Product | undefined` — proof the chain carried through
+					// automatically, with no discipline required from
+					// `hasAlternate`'s own predicate.
+					type Debug = typeof item.product;
+					type _Narrowed = Expect<Equal<Debug, Product>>;
+					return item.product.sku.length > 0 && item.alternate.sku.length > 0;
+				},
+			});
+
+		assert.deepStrictEqual(engine.conditionNames, [
+			"hasProduct",
+			"hasAlternate",
+			"hasBoth",
+		]);
 	});
 });

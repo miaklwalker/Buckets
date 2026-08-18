@@ -131,23 +131,10 @@ the Type Narrowing guide for the full story, `Prettify` included. `weightKg`
 two properties deep — `item.product.weightKg` — is one property
 past what TypeScript's own predicate inference reaches on an unannotated
 `checkFn`, so a plain `(item) => item.product.weightKg !== null` runs
-correctly but proves nothing further about `weightKg` itself. Write the
-predicate explicitly when a later condition needs that:
+correctly but proves nothing further about `weightKg` itself.
 
-```ts
-.defineCondition({
-  name: "hasWeight",
-  when: () => "hasProduct",
-  checkFn: (
-    item,
-  ): item is typeof item & { product: Record<"weightKg", number> } =>
-    item.product.weightKg !== null,
-})
-```
-
-For "is this optional or nullable property there at all" specifically —
-exactly the `hasProduct`/`hasWeight` shape above — `definedIn`/`presentIn`
-write that predicate for you:
+For "is this property there at all", `definedIn`/`presentIn` write that
+predicate for you, on `checkFn`'s own parameter:
 
 ```ts
 import { definedIn } from "@michaelrwalker/buckets";
@@ -158,15 +145,31 @@ import { definedIn } from "@michaelrwalker/buckets";
 })
 ```
 
-See the Property Predicates reference for the difference between the two
-(`null` counts as "defined" but not "present") and why, like the callback
-form above, they only narrow once `TObject` is pinned explicitly — the same
-underlying limit, worked around the same way.
+For a property *inside* that — like `product.weightKg` — `pathIn` does the
+same, one `.at()` per hop:
+
+```ts
+import { pathIn } from "@michaelrwalker/buckets";
+
+.defineCondition({
+  name: "hasWeight",
+  when: () => "hasProduct",
+  checkFn: pathIn<Listing>().at("product").isPresent("weightKg"),
+})
+```
+
+No hand-written `item is typeof item & { product: { weightKg: number } }`
+needed for either — only reach for a hand-written predicate when the check
+isn't just "is it there", like `weightKg > 10` below. See the Property
+Predicates reference for the difference between `definedIn`/`isDefined` and
+`presentIn`/`isPresent` (`null` counts as "defined" but not "present") and
+why, like the callback form above, all of these only narrow once `TObject`
+is pinned explicitly — the same underlying limit, worked around the same way.
 
 ## Chaining preconditions
 
 A `when` can name a condition that itself has a `when` — the dependency graph
-can go as deep as you need:
+can go as deep as you need, and gating on the *nearest* link is enough:
 
 ```ts
 .defineCondition({
@@ -177,15 +180,45 @@ can go as deep as you need:
 .defineCondition({
   name: "hasWeight",
   when: () => "hasProduct",
-  checkFn: (item): item is typeof item & { product: Record<"weightKg", number> } =>
-    item.product.weightKg !== null,
+  checkFn: pathIn<Listing>().at("product").isPresent("weightKg"),
 })
 .defineCondition({
   name: "isHeavy",
-  when: AND("hasProduct", "hasWeight"),
-  checkFn: (item) => item.product.weightKg > 10,
+  when: () => "hasWeight", // not AND("hasProduct", "hasWeight") — no need
+  checkFn: (item) => item.product.weightKg > 10, // item.product is still Product
 })
 ```
+
+`isHeavy` only names `"hasWeight"`, never `"hasProduct"`, and still knows
+about both. Every gated condition's guard is *always* intersected with
+whatever its own precondition already proved — `hasWeight`'s guard already
+included everything `hasProduct` proved, so `isHeavy`'s does too, and so on
+however deep the chain goes. This holds even if a link's own predicate
+doesn't restate the precondition itself — `definedIn`/`presentIn`, for
+instance, don't know anything about what ran before them, and it still
+carries through:
+
+```ts
+.defineCondition({
+  name: "hasProduct",
+  checkFn: (item): item is Listing & { product: Product } =>
+    item.product !== undefined,
+})
+.defineCondition({
+  name: "hasAlternate",
+  when: () => "hasProduct",
+  checkFn: definedIn<Listing>()("alternate"), // says nothing about product
+})
+.defineCondition({
+  name: "hasBoth",
+  when: () => "hasAlternate", // still knows about product too
+  checkFn: (item) => item.product.sku !== "" && item.alternate.sku !== "",
+})
+```
+
+It's sound by construction, not by trust: a condition only ever runs once its
+`when` held, so conjoining its own proof with the precondition's is always
+valid, whatever the condition's own predicate happens to say.
 
 `isHeavy` only runs once both `hasProduct` and `hasWeight` are true. Under the
 hood, conditions sharing no dependency still run concurrently — see the
