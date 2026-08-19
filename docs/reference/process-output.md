@@ -95,6 +95,25 @@ across a `processConditions()` batch. `group` carries whatever was given to
 `group: undefined`, since it has none of its own. Every condition appears
 here even when `results` is empty, as `{ passing: 0, failing: 0 }`.
 
+## `ConditionProgress`
+
+```ts
+interface ConditionProgress<TConditions extends string> {
+  readonly completed: number;
+  readonly total: number;
+  readonly summary: readonly ConditionSummary<TConditions>[];
+}
+```
+
+One frame of `processConditions()`'s `onProgress` callback — the running
+tally so far, in the same shape `ConditionBatchReport.summary` ends the
+batch with. Fires once per item, in **completion order**, not input order:
+the only order live progress can honestly report, since items finish
+whenever their conditions do. An item whose `checkFn` threw contributes
+nothing to `summary`, same as it contributes nothing to the final report's
+tally. See `liveConditionReport()` in the BucketEngine reference for turning
+this into a redrawing terminal table.
+
 ## `ConditionReport`
 
 ```ts

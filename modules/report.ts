@@ -1,4 +1,8 @@
-import type { ConditionBatchReport, ConditionSummary } from "./types.ts";
+import type {
+	ConditionBatchReport,
+	ConditionProgress,
+	ConditionSummary,
+} from "./types.ts";
 
 /** Per-call knobs for {@link formatConditionReport}. */
 export interface ConditionReportOptions {
@@ -136,4 +140,89 @@ export function printConditionReport<TInput, TConditions extends string>(
 	options?: ConditionReportOptions,
 ): void {
 	console.log(formatConditionReport(report, options));
+}
+
+/**
+ * The minimal shape {@link liveConditionReport} needs from an output stream —
+ * just enough of `process.stdout` to redraw in place, so this module carries
+ * no hard dependency on Node's own types.
+ */
+export interface ConditionReportStream {
+	write(chunk: string): unknown;
+	readonly isTTY?: boolean;
+}
+
+/** Per-call knobs for {@link liveConditionReport}. */
+export interface LiveConditionReportOptions extends ConditionReportOptions {
+	/** Where to write frames. Defaults to `process.stdout`. */
+	readonly stream?: ConditionReportStream;
+	/**
+	 * Minimum time between redraws, in milliseconds — the final frame
+	 * (`completed === total`) always draws regardless, so whatever is left on
+	 * screen when the batch finishes is never stale. Defaults to `80`.
+	 */
+	readonly minIntervalMs?: number;
+}
+
+/**
+ * An `onProgress` callback for `processConditions()` that redraws
+ * {@link formatConditionReport} in place as the batch runs — the bars
+ * filling up live, the way a build tool's progress line does:
+ *
+ * ```ts
+ * const report = await engine.processConditions(items, {
+ *   onProgress: liveConditionReport(),
+ * });
+ * ```
+ *
+ * On a real terminal (`stream.isTTY`), each frame overwrites the last one
+ * with ANSI cursor-movement escapes — move up, clear down, redraw. Piped to
+ * a file or any other non-TTY stream, there is no "in place" to redraw, so it
+ * falls back to printing one frame per redraw as a plain scrolling log
+ * instead of corrupting the output with escape codes a file can't interpret.
+ *
+ * Redraws are throttled to `minIntervalMs` apart — a batch of hundreds of
+ * thousands of items would otherwise spend more time repainting the terminal
+ * than doing the work it's reporting on. The one frame that always draws
+ * regardless of the throttle is the final one, so the table on screen when
+ * `processConditions()` resolves always matches what it resolved to.
+ *
+ * Each call to `liveConditionReport()` returns its own closure, so using it
+ * for two concurrent batches at once — two separate `onProgress` callbacks —
+ * won't have them fight over the same "how many lines to erase" bookkeeping.
+ */
+export function liveConditionReport<TConditions extends string>(
+	options: LiveConditionReportOptions = {},
+): (progress: ConditionProgress<TConditions>) => void {
+	const stream: ConditionReportStream = options.stream ?? process.stdout;
+	const isTTY = stream.isTTY === true;
+	const minIntervalMs = options.minIntervalMs ?? 80;
+
+	let previousLines = 0;
+	let lastDrawnAt = Number.NEGATIVE_INFINITY;
+
+	return (progress) => {
+		const isFinal = progress.completed >= progress.total;
+		const now = Date.now();
+		if (!isFinal && now - lastDrawnAt < minIntervalMs) return;
+		lastDrawnAt = now;
+
+		const table = formatConditionReport(
+			{ results: [], errors: [], summary: progress.summary },
+			options,
+		);
+		const frame = `Processed ${progress.completed} / ${progress.total}\n${table}`;
+
+		if (!isTTY) {
+			stream.write(`${frame}\n\n`);
+			return;
+		}
+
+		// Cursor up `previousLines`, then clear from there to the end of the
+		// screen, so a shorter frame doesn't leave stray lines of the last one
+		// behind underneath it.
+		if (previousLines > 0) stream.write(`\x1b[${previousLines}A\x1b[0J`);
+		stream.write(`${frame}\n`);
+		previousLines = frame.split("\n").length;
+	};
 }

@@ -25,6 +25,7 @@ import {
 	type ComputedConditionSpec,
 	type ConditionAssignment,
 	type ConditionBatchReport,
+	type ConditionProgress,
 	type ConditionReport,
 	type ConditionSpec,
 	type ConditionSummary,
@@ -950,12 +951,30 @@ export class BucketEngine<
 	 * console.log(formatConditionReport(report));
 	 * ```
 	 *
+	 * `options.onProgress`, if given, fires once per item as it finishes —
+	 * in completion order, not input order, since that's the only order live
+	 * progress can honestly report — with the running tally so far, in the
+	 * same shape `summary` ends the batch with. `formatConditionReport`
+	 * accepts a `{ summary }` directly, so a progress bar that fills in as the
+	 * batch runs is a redraw loop away — see {@link liveConditionReport} for a
+	 * ready-made one:
+	 *
+	 * ```ts
+	 * const report = await engine.processConditions(items, {
+	 *   onProgress: liveConditionReport(),
+	 * });
+	 * ```
+	 *
 	 * Requires only `.defineInput()` — unlike {@link process} and
 	 * {@link processOne}, no bucket has to exist yet.
 	 */
 	async processConditions(
 		items: readonly TInput[],
-		options: ProcessOptions = {},
+		options: ProcessOptions & {
+			readonly onProgress?: (
+				progress: ConditionProgress<NamesOf<TGuards & TComputed>>,
+			) => void;
+		} = {},
 	): Promise<ConditionBatchReport<TInput, NamesOf<TGuards & TComputed>>> {
 		if (!this.inputDefined) {
 			throw new BucketError(
@@ -972,8 +991,59 @@ export class BucketEngine<
 		const results: ConditionAssignment<TInput, string>[] = [];
 		const errors: BucketFailure<TInput, string>[] = [];
 
-		const outcomes = await mapWithConcurrency(items, concurrency, (item) =>
-			this.evaluateConditions(item),
+		const { onProgress } = options;
+		// Only pay for a running tally when someone is actually watching it.
+		const groupOf =
+			onProgress === undefined ? undefined : this.conditionGroupOf();
+		const liveTallies =
+			groupOf === undefined
+				? undefined
+				: new Map(
+						[...groupOf.keys()].map((name) => [
+							name,
+							{ passing: 0, failing: 0 },
+						]),
+					);
+		let completed = 0;
+
+		const outcomes = await mapWithConcurrency(
+			items,
+			concurrency,
+			(item) => this.evaluateConditions(item),
+			onProgress === undefined
+				? undefined
+				: (outcome) => {
+						completed += 1;
+						if (outcome.kind === "classified" && liveTallies !== undefined) {
+							for (const [name, passed] of Object.entries(outcome.conditions)) {
+								const tally = liveTallies.get(name);
+								if (tally === undefined) continue;
+								if (passed) tally.passing += 1;
+								else tally.failing += 1;
+							}
+						}
+						const liveSummary = [
+							...(groupOf as Map<string, string | undefined>).entries(),
+						].map(([name, group]) => {
+							const tally = liveTallies?.get(name) ?? {
+								passing: 0,
+								failing: 0,
+							};
+							return {
+								name,
+								group,
+								passing: tally.passing,
+								failing: tally.failing,
+							};
+						});
+						onProgress({
+							completed,
+							total: items.length,
+							summary: liveSummary as unknown as readonly ConditionSummary<
+								NamesOf<TGuards & TComputed>
+							>[],
+						});
+					},
 		);
 
 		for (const outcome of outcomes) {
@@ -1002,6 +1072,16 @@ export class BucketEngine<
 		};
 	}
 
+	/** Every known condition's `group`, keyed by name, in definition order — plain conditions then computed (always `undefined` for those, since they have no `group` of their own). */
+	private conditionGroupOf(): Map<string, string | undefined> {
+		const groupOf = new Map<string, string | undefined>();
+		for (const condition of this.conditions) {
+			groupOf.set(condition.name, condition.group);
+		}
+		for (const computed of this.computed) groupOf.set(computed.name, undefined);
+		return groupOf;
+	}
+
 	/**
 	 * How often each condition — plain and computed — came out true versus
 	 * false across `results`, grouped by {@link StoredCondition.group}. A
@@ -1013,11 +1093,7 @@ export class BucketEngine<
 	private summarizeConditions(
 		results: readonly { readonly conditions: Record<string, boolean> }[],
 	): ConditionSummary<string>[] {
-		const groupOf = new Map<string, string | undefined>();
-		for (const condition of this.conditions) {
-			groupOf.set(condition.name, condition.group);
-		}
-		for (const computed of this.computed) groupOf.set(computed.name, undefined);
+		const groupOf = this.conditionGroupOf();
 
 		const tallies = new Map<string, { passing: number; failing: number }>();
 		for (const name of groupOf.keys()) {

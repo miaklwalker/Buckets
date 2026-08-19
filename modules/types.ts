@@ -205,6 +205,21 @@ export interface ConditionBatchReport<TInput, TConditions extends string> {
 }
 
 /**
+ * One frame of `processConditions()`'s `onProgress` callback: the running
+ * tally so far, in the same shape {@link ConditionBatchReport.summary} ends
+ * the batch with. Fires once per item, in completion order rather than input
+ * order — the only order live progress can honestly report, since items
+ * finish whenever their conditions do, not necessarily in the order they
+ * arrived. An item whose `checkFn` threw contributes nothing to `summary`,
+ * same as it contributes nothing to the final report's tally.
+ */
+export interface ConditionProgress<TConditions extends string> {
+	readonly completed: number;
+	readonly total: number;
+	readonly summary: readonly ConditionSummary<TConditions>[];
+}
+
+/**
  * An item that answered every condition without error but matched no bucket.
  * `conditions` is the combination that satisfied nothing, which is normally
  * exactly the rule you have yet to write.

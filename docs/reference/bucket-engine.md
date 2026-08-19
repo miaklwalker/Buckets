@@ -187,7 +187,10 @@ condition failure: with one item, there's no rest-of-the-batch to protect.
 ```ts
 processConditions(
   items: readonly TInput[],
-  options?: { concurrency?: number },
+  options?: {
+    concurrency?: number;
+    onProgress?: (progress: ConditionProgress<TGuards & TComputed>) => void;
+  },
 ): Promise<ConditionBatchReport<TInput, TGuards & TComputed>>;
 ```
 
@@ -241,6 +244,40 @@ condition sorts last and prints `—`. `{ barWidth?: number }` (default `20`)
 controls how wide the distribution bar is; `printConditionReport` is the
 same thing written straight to `console.log`. See the Reports and Errors
 reference for `ConditionSummary` and `ConditionAssignment`.
+
+### Watching it fill in live
+
+`options.onProgress`, if given, fires once per item as it finishes —
+**in completion order, not input order**, since that's the only order live
+progress can honestly report — with `{ completed, total, summary }`: the
+same `summary` shape the finished report ends the batch with, tallied so
+far. `liveConditionReport()` turns that into a redraw loop that overwrites
+the table in place as the bars fill in, the way a build tool's progress line
+does:
+
+```ts
+import { liveConditionReport } from "@michaelrwalker/buckets";
+
+const report = await engine.processConditions(items, {
+  onProgress: liveConditionReport(),
+});
+```
+
+On a real terminal (`stream.isTTY`), each frame overwrites the last one with
+ANSI cursor-movement escapes. Piped to a file or any other non-TTY stream,
+there's no "in place" to redraw, so it falls back to printing one frame per
+redraw as a plain scrolling log instead of writing escape codes a file can't
+interpret. Redraws are throttled — `{ minIntervalMs?: number }`, default
+`80` — except the final frame (`completed === total`), which always draws,
+so whatever's on screen when `processConditions()` resolves always matches
+what it resolved to. `{ stream?: { write, isTTY? } }` (default
+`process.stdout`) points it somewhere other than stdout — useful for tests,
+or for driving two live reports on two separate streams, since each call to
+`liveConditionReport()` gets its own independent redraw state.
+
+`formatConditionReport`'s own options (`barWidth`) can be passed alongside
+these — `liveConditionReport` forwards them to the table it draws each
+frame. See `examples/liveConditionReport.ts` for a full run.
 
 ## Introspection
 

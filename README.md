@@ -433,6 +433,28 @@ showing what fraction of the batch passed:
 `printConditionReport(report, options?)` is the same thing written straight
 to `console.log`. See `examples/processConditions.ts` for a full run.
 
+### Watching the bars fill in live
+
+`processConditions(items, { onProgress })` fires `onProgress` once per item
+as it finishes — in completion order, not input order — with the running
+tally so far. `liveConditionReport()` turns that into a redraw loop that
+overwrites the table in place as the batch runs:
+
+```ts
+import { liveConditionReport } from "@michaelrwalker/buckets";
+
+const report = await engine.processConditions(items, {
+  onProgress: liveConditionReport(),
+});
+```
+
+On a real terminal it redraws with ANSI cursor-movement escapes; piped to a
+file or anything else non-TTY, it falls back to one frame per redraw instead
+of writing escape codes a file can't interpret. Redraws are throttled
+(`{ minIntervalMs? }`, default `80`) except the final frame, which always
+draws, so the table on screen when `processConditions()` resolves always
+matches what it resolved to. See `examples/liveConditionReport.ts`.
+
 ## Introspection
 
 | Member | Returns |
@@ -517,6 +539,10 @@ Everything else — `defineInput`, `clone()`, `concurrency`, and the shape of
 the errors it throws — works exactly as it does on `BucketEngine`, just with
 `ActionError` in place of `BucketError`. See the Actions guide and the
 ActionEngine reference in `docs/` for the full details.
+
+## AI Agents
+
+If you use an AI agent, run `npx @tanstack/intent@latest install`.
 
 ## Development
 

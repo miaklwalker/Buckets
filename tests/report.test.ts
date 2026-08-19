@@ -3,14 +3,28 @@ import test, { describe } from "node:test";
 import {
 	BucketEngine,
 	type ConditionBatchReport,
+	type ConditionProgress,
 	formatConditionReport,
+	liveConditionReport,
 	printConditionReport,
 } from "../main.ts";
 import { PRODUCTS, productSchema } from "./support.ts";
 
-async function report(): Promise<
-	ConditionBatchReport<unknown, "hasWeight" | "isDigital" | "isCheap">
-> {
+/** A stand-in for `process.stdout` that records every chunk written to it. */
+function fakeStream(isTTY: boolean) {
+	const writes: string[] = [];
+	return {
+		writes,
+		isTTY,
+		write(chunk: string) {
+			writes.push(chunk);
+			return true;
+		},
+	};
+}
+
+/** A fresh, unrun engine with the same conditions `report()` resolves from. */
+function engine() {
 	return new BucketEngine()
 		.defineInput(productSchema)
 		.defineCondition({
@@ -26,8 +40,13 @@ async function report(): Promise<
 			name: "isCheap",
 			group: "validity check",
 			checkFn: () => true,
-		})
-		.processConditions(PRODUCTS) as Promise<
+		});
+}
+
+async function report(): Promise<
+	ConditionBatchReport<unknown, "hasWeight" | "isDigital" | "isCheap">
+> {
+	return engine().processConditions(PRODUCTS) as Promise<
 		ConditionBatchReport<unknown, "hasWeight" | "isDigital" | "isCheap">
 	>;
 }
@@ -134,5 +153,89 @@ describe("printConditionReport", () => {
 		}
 		assert.strictEqual(calls.length, 1);
 		assert.strictEqual(calls[0], formatConditionReport(data));
+	});
+});
+
+describe("liveConditionReport", () => {
+	test("on a TTY, redraws in place with cursor-movement escapes", async () => {
+		const out = fakeStream(true);
+		await engine().processConditions(PRODUCTS, {
+			onProgress: liveConditionReport({ stream: out, minIntervalMs: 0 }),
+		});
+
+		// One redraw per item, and every redraw after the first moves the
+		// cursor back up before writing the next frame.
+		assert.strictEqual(out.writes.length, PRODUCTS.length * 2 - 1);
+		assert.ok(out.writes[0]?.startsWith("Processed 1 / 4"));
+		// "\x1b[<N>A\x1b[0J" — cursor up N lines, then clear to end of screen.
+		const eraseChunk = out.writes[1] ?? "";
+		assert.ok(eraseChunk.startsWith("\x1b["));
+		assert.ok(eraseChunk.endsWith("A\x1b[0J"));
+	});
+
+	test("on a non-TTY, prints one frame per redraw instead of overwriting", async () => {
+		const out = fakeStream(false);
+		await engine().processConditions(PRODUCTS, {
+			onProgress: liveConditionReport({ stream: out, minIntervalMs: 0 }),
+		});
+
+		assert.strictEqual(out.writes.length, PRODUCTS.length);
+		assert.ok(out.writes.every((chunk) => !chunk.includes("\x1b[")));
+	});
+
+	test("the last frame always matches processConditions()'s own summary", async () => {
+		const out = fakeStream(false);
+		const result = await engine().processConditions(PRODUCTS, {
+			onProgress: liveConditionReport({ stream: out, minIntervalMs: 0 }),
+		});
+
+		const lastFrame = out.writes[out.writes.length - 1] ?? "";
+		assert.strictEqual(
+			lastFrame.trim(),
+			`Processed 4 / 4\n${formatConditionReport(result)}`,
+		);
+	});
+
+	test("throttles mid-batch redraws, but always draws the final frame", async () => {
+		const out = fakeStream(true);
+		const total = 50;
+		let completed = 0;
+		const draw = liveConditionReport<"always">({
+			stream: out,
+			minIntervalMs: 10_000, // effectively "never" mid-batch
+		});
+		for (let i = 0; i < total; i++) {
+			completed += 1;
+			draw({
+				completed,
+				total,
+				summary: [
+					{ name: "always", group: undefined, passing: completed, failing: 0 },
+				],
+			} satisfies ConditionProgress<"always">);
+		}
+
+		// The very first call always draws (nothing to throttle against yet, so
+		// just the frame — no prior frame to erase), and the final call
+		// (completed === total) always draws regardless of the throttle (frame
+		// plus the erase-before-redraw); everything in between is suppressed.
+		assert.strictEqual(out.writes.length, 3);
+		assert.ok(out.writes[out.writes.length - 1]?.includes("Processed 50 / 50"));
+	});
+
+	test("two concurrent live reports don't share redraw state", async () => {
+		const outA = fakeStream(true);
+		const outB = fakeStream(true);
+		await Promise.all([
+			engine().processConditions(PRODUCTS, {
+				onProgress: liveConditionReport({ stream: outA, minIntervalMs: 0 }),
+			}),
+			engine().processConditions(PRODUCTS, {
+				onProgress: liveConditionReport({ stream: outB, minIntervalMs: 0 }),
+			}),
+		]);
+
+		assert.strictEqual(outA.writes.length, PRODUCTS.length * 2 - 1);
+		assert.strictEqual(outB.writes.length, PRODUCTS.length * 2 - 1);
 	});
 });

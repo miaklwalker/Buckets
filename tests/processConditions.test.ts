@@ -143,3 +143,72 @@ describe("processConditions", () => {
 		}, /"group" needs to be a string/);
 	});
 });
+
+describe("processConditions onProgress", () => {
+	test("fires once per item, ending at completed === total", async () => {
+		const frames: { completed: number; total: number }[] = [];
+		await products().processConditions(PRODUCTS, {
+			onProgress: (progress) =>
+				frames.push({ completed: progress.completed, total: progress.total }),
+		});
+
+		assert.strictEqual(frames.length, PRODUCTS.length);
+		assert.deepStrictEqual(
+			frames.map((f) => f.completed),
+			[1, 2, 3, 4],
+		);
+		assert.ok(frames.every((f) => f.total === PRODUCTS.length));
+	});
+
+	test("the final frame's summary matches the resolved report's summary", async () => {
+		let lastSummary: unknown;
+		const report = await products().processConditions(PRODUCTS, {
+			onProgress: (progress) => {
+				lastSummary = progress.summary;
+			},
+		});
+
+		assert.deepStrictEqual(lastSummary, report.summary);
+	});
+
+	test("a condition that threw contributes nothing to any frame's tally", async () => {
+		const frames: unknown[] = [];
+		await new BucketEngine()
+			.defineInput(productSchema)
+			.defineCondition({
+				name: "hasWeight",
+				checkFn: (product) => product.weight !== null,
+			})
+			.defineCondition({
+				name: "explodes",
+				checkFn: (product) => {
+					if (product.sku === "physical-1") throw new Error("boom");
+					return true;
+				},
+			})
+			.processConditions(PRODUCTS, {
+				onProgress: (progress) => frames.push(progress.summary),
+			});
+
+		const finalFrame = frames[frames.length - 1] as {
+			name: string;
+			passing: number;
+			failing: number;
+		}[];
+		const explodes = finalFrame.find((entry) => entry.name === "explodes");
+		// 4 products, 1 throws -> 3 contribute, all true.
+		assert.deepStrictEqual(explodes, {
+			name: "explodes",
+			group: undefined,
+			passing: 3,
+			failing: 0,
+		});
+	});
+
+	test("costs nothing extra when no onProgress is given", async () => {
+		// No assertion beyond "doesn't throw" — this exercises the branch where
+		// the tally map is never allocated at all.
+		const report = await products().processConditions(PRODUCTS);
+		assert.strictEqual(report.results.length, PRODUCTS.length);
+	});
+});

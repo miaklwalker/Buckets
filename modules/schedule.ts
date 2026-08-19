@@ -6,6 +6,11 @@ import { BucketError, DEFAULT_CONCURRENCY } from "./types.ts";
  * reshuffled itself depending on how fast each predicate resolved would be
  * miserable to diff or snapshot.
  *
+ * `onSettled`, if given, fires once per item as soon as *that* item's worker
+ * resolves — in completion order, not input order, since that's the only
+ * order live progress reporting can honestly claim. Purely an observation
+ * hook: nothing about the returned array depends on it.
+ *
  * Not exported from the package barrel: it exists so `.process()` can honour
  * `concurrency` without pulling in a dependency.
  */
@@ -13,6 +18,7 @@ export async function mapWithConcurrency<TItem, TResult>(
 	items: readonly TItem[],
 	limit: number,
 	worker: (item: TItem, index: number) => Promise<TResult>,
+	onSettled?: (result: TResult, index: number) => void,
 ): Promise<TResult[]> {
 	const results = new Array<TResult>(items.length);
 	if (items.length === 0) return results;
@@ -26,7 +32,9 @@ export async function mapWithConcurrency<TItem, TResult>(
 				const index = cursor;
 				cursor += 1;
 				// Guarded by the loop condition above, so the index is in range.
-				results[index] = await worker(items[index] as TItem, index);
+				const result = await worker(items[index] as TItem, index);
+				results[index] = result;
+				onSettled?.(result, index);
 			}
 		}),
 	);
