@@ -1,6 +1,6 @@
 {
 	"name": "@michaelrwalker/buckets",
-	"version": "0.5.0",
+	"version": "0.5.1",
 	"description": "Sort items into named buckets using boolean rules over named, async conditions",
 	"homepage": "https://michaelrwalker.netlify.app/buckets",
 	"type": "module",
