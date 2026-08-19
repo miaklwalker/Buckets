@@ -1,0 +1,89 @@
+# skills/_artifacts/skill_tree.yaml
+library:
+  name: '@michaelrwalker/buckets'
+  version: '0.5.0'
+  repository: '' # no "repository" field in package.json; homepage is https://michaelrwalker.netlify.app/buckets
+  description: 'A rule engine for sorting items into named buckets or running named actions, using boolean rules over named, possibly-async conditions.'
+generated_from:
+  domain_map: 'skills/_artifacts/domain_map.yaml'
+  skill_spec: 'skills/_artifacts/skill_spec.md'
+generated_at: '2026-08-18'
+
+# Minimal-library fast path: fewer than 5 skills, no framework adapter
+# packages. Flat structure, no router skill, no core-overview skill — every
+# skill below is standalone `type: core`.
+
+skills:
+  - name: 'Model decision logic with conditions'
+    slug: 'model-decision-logic'
+    type: 'core'
+    domain: 'modeling-decisions'
+    path: 'skills/model-decision-logic/SKILL.md'
+    description: >
+      Replace nested if/ternary/switch decision logic with named,
+      type-checked conditions and boolean rules using BucketEngine's
+      defineInput, defineCondition, when (preconditions),
+      defineComputedCondition, and the AND/OR/NOT/ONLY combinators.
+    sources:
+      - 'docs/guides/conditions.md'
+      - 'docs/guides/preconditions.md'
+      - 'docs/guides/boolean-logic.md'
+      - 'docs/guides/computed-conditions.md'
+      - 'docs/reference/combinators.md'
+      - 'docs/reference/predicates.md'
+      - 'modules/engine.ts'
+      - 'modules/logic.ts'
+      - 'modules/predicates.ts'
+
+  - name: 'Sort items into buckets'
+    slug: 'sort-items-into-buckets'
+    type: 'core'
+    domain: 'sorting-and-dispatch'
+    path: 'skills/sort-items-into-buckets/SKILL.md'
+    description: >
+      Declare buckets as boolean expressions over conditions with
+      defineBucket, process a batch or single item with process()/
+      processOne(), read the buckets/unmatched/errors report, find
+      uncovered rules with missingCombinations(), and get narrowed bucket
+      item types from type-predicate conditions.
+    sources:
+      - 'docs/overview.md'
+      - 'docs/guides/buckets.md'
+      - 'docs/guides/cloning.md'
+      - 'docs/guides/narrowing.md'
+      - 'docs/reference/bucket-engine.md'
+      - 'docs/reference/process-output.md'
+      - 'modules/engine.ts'
+
+  - name: 'Run independent actions'
+    slug: 'run-independent-actions'
+    type: 'core'
+    domain: 'running-effects'
+    path: 'skills/run-independent-actions/SKILL.md'
+    description: >
+      Use ActionEngine's defineAction to run named side effects on
+      qualifying items independently of one another, and understand how
+      its failure and unmatched semantics differ from BucketEngine's
+      shared-expression model.
+    sources:
+      - 'docs/guides/actions.md'
+      - 'docs/reference/action-engine.md'
+      - 'modules/actionEngine.ts'
+
+  - name: 'Tune async conditions and scale'
+    slug: 'tune-async-and-scale'
+    type: 'core'
+    domain: 'operating-at-scale'
+    path: 'skills/tune-async-and-scale/SKILL.md'
+    description: >
+      Async checkFns are an escape hatch for local, bounded work — not the
+      default way to write a condition. Covers when reaching for async is
+      appropriate, tuning the concurrency option for large batches,
+      auditing conditions before a bucket exists with processConditions(),
+      and watching a long batch live with onProgress/liveConditionReport().
+    sources:
+      - 'docs/guides/async-and-performance.md'
+      - 'docs/reference/process-output.md'
+      - 'docs/reference/bucket-engine.md'
+      - 'modules/report.ts'
+      - 'modules/schedule.ts'
